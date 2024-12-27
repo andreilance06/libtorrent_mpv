@@ -1,0 +1,21 @@
+project libtorrent_mpv ;
+
+
+use-project /libtorrent : "C:/Users/Kids/Documents/Github/libtorrent" ;
+lib ws2_32 : : <name>ws2_32 ;
+
+sources = 
+    libtorrent_mpv
+    alert_handler 
+    range_parser ;
+
+libs = 
+    /libtorrent//torrent
+    ws2_32
+    /boost//json
+    /boost//url ;
+
+exe libtorrent_mpv : src/$(sources).cpp :
+    <include>include 
+    <library>$(libs) 
+    <cxxflags>-Wa,-mbig-obj ;

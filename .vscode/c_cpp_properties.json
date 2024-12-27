@@ -1,0 +1,29 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:/boost_1_87_0",
+                "C:/Users/Kids/Documents/Github/libtorrent/include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE",
+                "BOOST_ALL_NO_LIB",
+                "BOOST_ASIO_ENABLE_CANCELIO",
+                "BOOST_ASIO_HAS_STD_CHRONO",
+                "BOOST_MULTI_INDEX_DISABLE_SERIALIZATION",
+                "BOOST_NO_DEPRECATED",
+                "BOOST_SYSTEM_NO_DEPRECATED"
+            ],
+            "windowsSdkVersion": "10.0.22621.0",
+            "cStandard": "c17",
+            "cppStandard": "c++14",
+            "intelliSenseMode": "windows-gcc-x64",
+            "compilerPath": "C:/mingw64/bin/g++.exe"
+        }
+    ],
+    "version": 4
+}

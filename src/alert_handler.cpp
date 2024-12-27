@@ -1,0 +1,187 @@
+#include <libtorrent/alert_types.hpp>
+#include <libtorrent/hex.hpp>
+#include <libtorrent/session.hpp>
+#include <condition_variable>
+#include <future>
+#include <mutex>
+
+#include "alert_handler.hpp"
+
+using namespace handler;
+
+alert_handler::alert_handler(lt::session &ses) : session(ses)
+{
+	alert_thread_ = std::thread(
+		[this]
+		{
+			while (!stop_)
+			{
+				std::vector<lt::alert *> alerts;
+				session.pop_alerts(&alerts);
+				for (auto a : alerts)
+					handle_alert(a);
+				session.wait_for_alert(std::chrono::seconds(1));
+			}
+		});
+}
+
+void alert_handler::handle_alert(lt::alert *a)
+{
+
+	switch (a->type())
+	{
+	case lt::read_piece_alert::alert_type:
+		handle_read_piece_alert(lt::alert_cast<lt::read_piece_alert>(a));
+		break;
+	case lt::piece_finished_alert::alert_type:
+		handle_piece_finished_alert(lt::alert_cast<lt::piece_finished_alert>(a));
+		break;
+	case lt::add_torrent_alert::alert_type:
+		handle_add_torrent_alert(lt::alert_cast<lt::add_torrent_alert>(a));
+		break;
+	case lt::metadata_received_alert::alert_type:
+		handle_metadata_received_alert(lt::alert_cast<lt::metadata_received_alert>(a));
+		break;
+	case lt::torrent_removed_alert::alert_type:
+		handle_torrent_interrupt(lt::alert_cast<lt::torrent_removed_alert>(a)->info_hashes);
+		break;
+	case lt::torrent_paused_alert::alert_type:
+		handle_torrent_interrupt(lt::alert_cast<lt::torrent_paused_alert>(a)->handle.info_hashes());
+		break;
+	}
+}
+
+void alert_handler::handle_read_piece_alert(lt::read_piece_alert *a)
+{
+	lt::torrent_handle t = a->handle;
+	piece_request rq;
+	rq.info_hash = t.info_hashes();
+	rq.piece = a->piece;
+	using iter = requests_t::iterator;
+
+	std::lock_guard<std::mutex> l(mtx_);
+	std::pair<iter, iter> range = requests_.equal_range(rq);
+	if (range.first == range.second)
+		return;
+
+	piece_entry pe;
+	pe.buffer = a->buffer;
+	pe.piece = a->piece;
+	pe.size = a->size;
+	for (iter i = range.first; i != range.second; i++)
+		i->promise->set_value(pe);
+
+	requests_.erase(range.first, range.second);
+}
+
+void alert_handler::handle_piece_finished_alert(lt::piece_finished_alert *a)
+{
+	lt::torrent_handle t = a->handle;
+	piece_request rq;
+	rq.info_hash = t.info_hashes();
+	rq.piece = a->piece_index;
+	have_pieces_[rq.info_hash].insert(a->piece_index);
+
+	using iter = requests_t::iterator;
+
+	std::lock_guard<std::mutex> l(mtx_);
+	std::pair<iter, iter> range = requests_.equal_range(rq);
+	if (range.first == range.second)
+		return;
+
+	t.read_piece(a->piece_index);
+}
+
+void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a)
+{
+	if (a->error)
+		return;
+
+	lt::torrent_handle t = a->handle;
+	if (t.torrent_file() == nullptr)
+		return;
+
+	lt::piece_index_t piece_count{t.torrent_file()->num_pieces()};
+	std::vector<std::pair<lt::piece_index_t, lt::download_priority_t>> priorities;
+	for (lt::piece_index_t i{0}; i < piece_count; i++)
+		priorities.push_back(std::pair<lt::piece_index_t, lt::download_priority_t>(i, lt::dont_download));
+	t.prioritize_pieces(priorities);
+}
+
+void alert_handler::handle_metadata_received_alert(lt::metadata_received_alert *a)
+{
+	lt::torrent_handle t = a->handle;
+
+	std::lock_guard<std::mutex> l(metadata_mtx_);
+	metadata_cv_.notify_all();
+
+	lt::piece_index_t piece_count{t.torrent_file()->num_pieces()};
+	std::vector<std::pair<lt::piece_index_t, lt::download_priority_t>> priorities;
+	for (lt::piece_index_t i{0}; i < piece_count; i++)
+		priorities.push_back(std::pair<lt::piece_index_t, lt::download_priority_t>(i, lt::dont_download));
+	t.prioritize_pieces(priorities);
+}
+
+void alert_handler::handle_torrent_interrupt(lt::info_hash_t info_hash)
+{
+	piece_request rq;
+	rq.info_hash = info_hash;
+
+	rq.piece = lt::piece_index_t{0};
+	typedef requests_t::iterator iter;
+
+	std::lock_guard<std::mutex> l(mtx_);
+	iter first = requests_.lower_bound(rq);
+	rq.piece = lt::piece_index_t{INT_MAX};
+	iter last = requests_.upper_bound(rq);
+	try
+	{
+		throw std::runtime_error("Torrent was interrupted");
+	}
+	catch (...)
+	{
+		for (iter i = first; i != last; i++)
+			i->promise->set_exception(std::current_exception());
+	}
+	requests_.erase(first, last);
+}
+
+std::shared_future<piece_entry> alert_handler::schedule_piece(lt::torrent_handle &t, lt::piece_index_t const piece)
+{
+	piece_request rq;
+	rq.info_hash = t.info_hashes();
+	rq.piece = piece;
+	rq.promise.reset(new std::promise<piece_entry>());
+
+	std::unique_lock<std::mutex> l(mtx_);
+	requests_.insert(rq);
+	l.unlock();
+
+	if (have_pieces_[rq.info_hash].count(piece))
+	{
+		t.read_piece(piece);
+	}
+	else if (t.have_piece(piece))
+	{
+		have_pieces_[rq.info_hash].insert(piece);
+		t.read_piece(piece);
+	}
+
+	return std::shared_future<piece_entry>(rq.promise->get_future());
+}
+
+void alert_handler::wait_metadata(lt::torrent_handle &t)
+{
+	if (t.torrent_file() == nullptr)
+	{
+		std::unique_lock<std::mutex> l(metadata_mtx_);
+		metadata_cv_.wait(l, [&t]()
+						  { return t.torrent_file() != nullptr; });
+	}
+}
+
+alert_handler::~alert_handler()
+{
+	stop_ = true;
+	alert_thread_.join();
+}
