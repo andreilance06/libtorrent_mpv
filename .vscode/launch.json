@@ -9,7 +9,11 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/bin/gcc-14/release/crypto-built-in/link-static/threadapi-win32/libtorrent_mpv.exe",
-            "args": [],
+            "args": [
+                "0.0.0.0",
+                "8080",
+                "8"
+            ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
@@ -34,7 +38,11 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/bin/gcc-14/debug/crypto-built-in/link-static/threadapi-win32/libtorrent_mpv.exe",
-            "args": [],
+            "args": [
+                "0.0.0.0",
+                "8080",
+                "8"
+            ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],

@@ -1,5 +1,5 @@
 #include <boost/asio.hpp>
-#include <boost/asio/thread_pool.hpp>
+#include <boost/beast.hpp>
 #include <boost/json.hpp>
 #include <boost/url.hpp>
 #include <libtorrent/alert_types.hpp>
@@ -8,6 +8,7 @@
 #include <libtorrent/session.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <regex>
@@ -17,6 +18,8 @@
 #include "alert_handler.hpp"
 #include "range_parser.hpp"
 
+namespace beast = boost::beast;
+namespace net = boost::asio;
 using boost::asio::ip::tcp;
 
 const char* ws = " \t\n\r\f\v";
@@ -46,6 +49,15 @@ struct request
 	std::string method;
 	std::string target;
 	std::map<std::string, std::string> headers;
+    bool keep_alive;
+};
+
+struct response
+{
+    int status;
+    std::map<std::string, std::string> headers;
+    std::string content{};
+    bool keep_alive;
 };
 
 struct wrapped_file
@@ -227,181 +239,141 @@ static std::string mime_type(std::string path)
     return "application/octet-stream"; // Default fallback MIME type
 }
 
+void fail(beast::error_code ec, char const* what) { std::cerr << what << ": " << ec.message() << "\n"; }
 
-class HttpServer {
+class http_session : public std::enable_shared_from_this<http_session> {
+    beast::tcp_stream stream_;
+    tcp::endpoint ep_ = stream_.socket().remote_endpoint();
+	std::shared_ptr<handler::alert_handler> handler_;
+    std::function<void()> shutdown_;
+
 public:
-    HttpServer(
-		boost::asio::io_context& io_context,
-		unsigned short port,
-		std::size_t thread_count,
-		handler::alert_handler &handler)
-        : io_context_(io_context), acceptor_(io_context, tcp::endpoint(tcp::v4(), port)), thread_pool_(thread_count), handler_(handler) {
-        accept();
+    http_session(tcp::socket&& socket, std::shared_ptr<handler::alert_handler> handler, std::function<void()> shutdown)
+    : stream_(std::move(socket))
+    , handler_(handler)
+    , shutdown_(shutdown) {
+        std::cerr << "HTTP session (" << ep_ << ")" << std::endl;
+    }
+
+    ~http_session() {
+        std::cerr << "HTTP session destroyed (" << ep_ << ")" << std::endl;
+    }
+
+    void start() {
+        net::dispatch(stream_.get_executor(),
+                        std::bind(&http_session::do_read, this->shared_from_this()));
     }
 
 private:
 
-	boost::asio::io_context& io_context_;
-    tcp::acceptor acceptor_;
-    boost::asio::thread_pool thread_pool_;
-	handler::alert_handler &handler_;
-
-    void accept() {
-        auto socket = std::make_shared<tcp::socket>(io_context_);
-        acceptor_.async_accept(*socket, [this, socket](boost::system::error_code ec) {
-            if (!ec) {
-                boost::asio::post(thread_pool_, [this, socket]() {
-                    handle_request(socket);
-                });
-            }
-            accept();
-        });
+    void do_read() {
+        auto buffer = std::make_shared<net::streambuf>();
+        using namespace std::placeholders;
+        net::async_read_until(stream_, *buffer, "\r\n\r\n", std::bind(&http_session::on_read, this->shared_from_this(), _1, _2, buffer));
     }
 
-    void handle_request(std::shared_ptr<tcp::socket> socket) {
-    auto buffer = std::make_shared<boost::asio::streambuf>();
-    boost::asio::async_read_until(*socket, *buffer, "\r\n\r\n",
-        [this, socket, buffer](boost::system::error_code ec, std::size_t bytes_transferred) {
-            if (!ec) {
-                std::istream request_stream(buffer.get());
-                std::string request_line;
-                std::getline(request_stream, request_line);
+    void on_read(boost::system::error_code ec, std::size_t, std::shared_ptr<net::streambuf> buffer) {
 
-                // Extract the request line
-				request req;
-                std::istringstream request_line_stream(request_line);
-                request_line_stream >> req.method >> req.target;
+        if (ec == net::error::eof)
+            return do_close();
 
-                // Parse headers
-                std::string header_line;
-                while (std::getline(request_stream, header_line) && header_line != "\r") {
-                    auto delimiter_pos = header_line.find(":");
-                    if (delimiter_pos != std::string::npos) {
-                        std::string key = header_line.substr(0, delimiter_pos);
-                        std::string value = header_line.substr(delimiter_pos + 1);
-                        // Trim whitespace
-                        trim(key);
-						trim(value);
-                        req.headers[key] = value;
-                    }
-                }
-
-                // Log headers
-                // for (const auto& [key, value] : req.headers) {
-                //     std::cout << "Header: " << key << " => " << value << std::endl;
-                // }
-
-                // Handle the request based on the method
-				if (req.method == "GET" || req.method == "HEAD")
-					handle_get(socket, req);
-				else if (req.method == "POST")
-					handle_post(socket, buffer, req);
-				else
-					handle_no_method(socket);
-            }
-        });
-}
-
-
-    void handle_post(std::shared_ptr<tcp::socket> socket, std::shared_ptr<boost::asio::streambuf> buffer, request &req) {
+        if (ec)
+            return fail(ec, "read");
+        
         std::istream request_stream(buffer.get());
-        std::string body((std::istreambuf_iterator<char>(request_stream)), std::istreambuf_iterator<char>());
+        std::string request_line;
+        std::getline(request_stream, request_line);
 
-		if (req.target != "/torrents")
-		{
-			std::string content = "Forbidden";
-			const std::string response =
-				"HTTP/1.1 403\r\n"
-				"Content-Type: text/plain\r\n"
-				"Content-Length: " + std::to_string(content.length()) + "\r\n"
-				"\r\n" + content;
+        // Extract the request line
+        request req;
+        std::istringstream request_line_stream(request_line);
+        request_line_stream >> req.method >> req.target;
 
-			boost::asio::async_write(*socket, boost::asio::buffer(response),
-				[socket](boost::system::error_code ec, std::size_t) {
-					if (!ec) {
-						socket->shutdown(tcp::socket::shutdown_send);
-						socket->close();
-					}
-				});
-			return;
-		}
-
-		lt::add_torrent_params params = get_torrent_params(body);
-		lt::torrent_handle t = handler_.session.find_torrent(params.info_hashes.v1);
-
-		if (!t.is_valid())
-		{
-			lt::error_code ec;
-            t = handler_.session.add_torrent(params, ec);
-            if (ec)
-            {
-				std::string content = "Failed to add torrent " + ec.message();
-				const std::string response =
-					"HTTP/1.1 200\r\n"
-					"Content-Type: text/plain\r\n"
-					"Content-Length: " + std::to_string(content.length()) + "\r\n"
-					"\r\n" + content;
-
-				boost::asio::async_write(*socket, boost::asio::buffer(response),
-					[socket](boost::system::error_code ec, std::size_t) {
-						if (!ec) {
-							socket->shutdown(tcp::socket::shutdown_send);
-							socket->close();
-						}
-					});
-                return;
+        // Parse headers
+        std::string header_line;
+        while (std::getline(request_stream, header_line) && header_line != "\r") {
+            auto delimiter_pos = header_line.find(":");
+            if (delimiter_pos != std::string::npos) {
+                std::string key = header_line.substr(0, delimiter_pos);
+                std::string value = header_line.substr(delimiter_pos + 1);
+                // Trim whitespace
+                trim(key);
+                trim(value);
+                req.headers[key] = value;
+                if (key == "Connection")
+                    req.keep_alive = (value == "keep-alive");
             }
-		}
+        }
 
-		handler_.wait_metadata(t);
+        if (!req.headers.count("Connection"))
+            req.keep_alive = true;
 
-		std::string content = build_playlist(wrap_files(socket, t.torrent_file()));
-		const std::string response =
-            "HTTP/1.1 200\r\n"
-            "Content-Type: application/vnd.apple.mpegurl\r\n"
-            "Content-Length: " + std::to_string(content.size()) + "\r\n"
-            "\r\n" + content;
-
-		boost::asio::async_write(*socket, boost::asio::buffer(response),
-            [socket](boost::system::error_code ec, std::size_t) {
-                if (!ec) {
-                    socket->shutdown(tcp::socket::shutdown_send);
-                    socket->close();
-                }
-            });
+        // Handle the request based on the method
+        if (req.method == "GET" || req.method == "HEAD")
+            handle_get(std::move(req));
+        else if (req.method == "POST")
+            handle_post(std::move(req), buffer);
+        else
+            handle_no_method(std::move(req));
     }
 
-    void handle_get(std::shared_ptr<tcp::socket> socket, request &req) {
+    void do_write(const response&& res) {
+        using namespace std::placeholders;
+        std::string buf = "HTTP/1.1 " + std::to_string(res.status) + "\r\n";
+        for (auto &h : res.headers)
+            buf += h.first + ": " + h.second + "\r\n";
+        
+        buf += "\r\n" + res.content;
+
+        net::async_write(
+            stream_,
+            net::buffer(buf),
+            std::bind(&http_session::on_write, this->shared_from_this(), _1, _2, res.keep_alive));
+    }
+
+    void on_write(boost::system::error_code ec, std::size_t, bool keep_alive) {
+        if (ec)
+            return fail(ec, "write");
+        
+        if (!keep_alive)
+            return do_close();
+
+        do_read();
+    }
+
+    void do_close() {
+        boost::system::error_code ec;
+        stream_.socket().shutdown(tcp::socket::shutdown_both, ec);
+    }
+
+    void handle_get(request&& req) {
+        response res;
+        res.keep_alive = req.keep_alive;
+        res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
 
 		if (req.target == "/torrents")
 		{
 			boost::json::array torrents;
-			for (auto &t : handler_.session.get_torrents())
+			for (auto &t : handler_->session.get_torrents())
 			{
 				std::shared_ptr<const lt::torrent_info> info = t.torrent_file();
 				if (info == nullptr)
 					continue;
 				
-				wrapped_torrent wt = wrap_torrent(socket, info);
+				wrapped_torrent wt = wrap_torrent(info);
 				boost::json::value data = to_json(wt);
 				torrents.push_back(data);
 			}
 
-			std::string content = boost::json::serialize(torrents);
-			const std::string response =
-				"HTTP/1.1 200\r\n"
-				"Content-Type: application/json\r\n"
-				"Content-Length: " + std::to_string(content.size()) + "\r\n"
-				"\r\n" + (req.method == "GET" ? content : "");
+            std::string content = boost::json::serialize(torrents);
+            response res;
+            res.status = 200;
+            res.headers["Content-Type"] = "application/json";
+            res.headers["Content-Length"] = std::to_string(content.length());
+            if (req.method == "GET")
+                res.content = std::move(content);
 
-			boost::asio::async_write(*socket, boost::asio::buffer(response),
-				[socket](boost::system::error_code ec, std::size_t) {
-					if (!ec) {
-						socket->shutdown(tcp::socket::shutdown_send);
-						socket->close();
-					}
-				});
-			return;
+			return do_write(std::move(res));
 		}
 
 		if (std::regex_match(req.target, std::regex("^/torrents/([0-9a-fA-F]{40})$")))
@@ -410,44 +382,31 @@ private:
 
 			lt::sha1_hash sha1;
 			lt::aux::from_hex(info_hash, sha1.data());
-			lt::torrent_handle t = handler_.session.find_torrent(sha1);
+			lt::torrent_handle t = handler_->session.find_torrent(sha1);
 
 			if (!t.is_valid())
 			{
 				std::string content = "Torrent not found";
-				const std::string response =
-					"HTTP/1.1 404\r\n"
-					"Content-Type: text/plain\r\n"
-					"Content-Length: " + std::to_string(content.size()) + "\r\n"
-					"\r\n" + (req.method == "GET" ? content : "");
+                response res;
+                res.status = 404;
+                res.headers["Content-Type"] = "text/plain";
+                res.headers["Content-Length"] = std::to_string(content.length());
+                if (req.method == "GET")
+                    res.content = std::move(content);
 
-				boost::asio::async_write(*socket, boost::asio::buffer(response),
-					[socket](boost::system::error_code ec, std::size_t) {
-						if (!ec) {
-							socket->shutdown(tcp::socket::shutdown_send);
-							socket->close();
-						}
-					});
-				return;
+				return do_write(std::move(res));
 			}
 
-			handler_.wait_metadata(t);
+			handler_->wait_metadata(t);
 
-			std::string content = build_playlist(wrap_files(socket, t.torrent_file()));
-			const std::string response =
-				"HTTP/1.1 200\r\n"
-				"Content-Type: application/json\r\n"
-				"Content-Length: " + std::to_string(content.size()) + "\r\n"
-				"\r\n" + (req.method == "GET" ? content : "");
+			std::string content = build_playlist(wrap_files(t.torrent_file()));
+            res.status = 200;
+            res.headers["Content-Type"] = "application/json";
+            res.headers["Content-Length"] = std::to_string(content.length());
+            if (req.method == "GET")
+                res.content = std::move(content);
 
-			boost::asio::async_write(*socket, boost::asio::buffer(response),
-				[socket](boost::system::error_code ec, std::size_t) {
-					if (!ec) {
-						socket->shutdown(tcp::socket::shutdown_send);
-						socket->close();
-					}
-				});
-			return;
+			return do_write(std::move(res));
 		}
 
 		if (std::regex_match(req.target, std::regex("^/torrents/([0-9a-fA-F]{40})/(.+)$")))
@@ -461,28 +420,21 @@ private:
 
 			lt::sha1_hash sha1;
 			lt::aux::from_hex(info_hash, sha1.data());
-			lt::torrent_handle t = handler_.session.find_torrent(sha1);
+			lt::torrent_handle t = handler_->session.find_torrent(sha1);
 
 			if (!t.is_valid())
 			{
 				std::string content = "Torrent not found";
-				const std::string response =
-					"HTTP/1.1 404\r\n"
-					"Content-Type: text/plain\r\n"
-					"Content-Length: " + std::to_string(content.size()) + "\r\n"
-					"\r\n" + (req.method == "GET" ? content : "");
+                res.status = 404;
+                res.headers["Content-Type"] = "text/plain";
+                res.headers["Content-Length"] = std::to_string(content.length());
+                if (req.method == "GET")
+                    res.content = std::move(content);
 
-				boost::asio::async_write(*socket, boost::asio::buffer(response),
-					[socket](boost::system::error_code ec, std::size_t) {
-						if (!ec) {
-							socket->shutdown(tcp::socket::shutdown_send);
-							socket->close();
-						}
-					});
-				return;
+				return do_write(std::move(res));
 			}
 
-			handler_.wait_metadata(t);
+			handler_->wait_metadata(t);
 
 			auto info = t.torrent_file();
 			lt::file_index_t file_index{-1};
@@ -499,20 +451,13 @@ private:
 			if (file_index < lt::file_index_t(0))
 			{
 				std::string content = "File not found";
-				const std::string response =
-					"HTTP/1.1 404\r\n"
-					"Content-Type: text/plain\r\n"
-					"Content-Length: " + std::to_string(content.size()) + "\r\n"
-					"\r\n" + (req.method == "GET" ? content : "");
+                res.status = 404;
+                res.headers["Content-Type"] = "text/plain";
+                res.headers["Content-Length"] = std::to_string(content.length());
+                if (req.method == "GET")
+                    res.content = std::move(content);
 
-				boost::asio::async_write(*socket, boost::asio::buffer(response),
-					[socket](boost::system::error_code ec, std::size_t) {
-						if (!ec) {
-							socket->shutdown(tcp::socket::shutdown_send);
-							socket->close();
-						}
-					});
-				return;
+				return do_write(std::move(res));
 			}
 			
 			int64_t size = info->files().file_size(file_index);
@@ -529,21 +474,16 @@ private:
 			const std::string response =
 				"HTTP/1.1 " + std::string(range.length < size ? "206" : "200") + "\r\n"
 				"Accept-Ranges: bytes\r\n"
+                "Connection: " + std::string(req.keep_alive ? "keep-alive" : "close") + "\r\n"
 				"Content-Type: " + mime_type(path) + "\r\n"
 				"Content-Length: " + std::to_string(range.length) + "\r\n" + 
 				std::string(range.length < size ? "Content-Range: " + range.content_range(size) + "\r\n" : "") + "\r\n";
 			
 			boost::system::error_code ec;
-			boost::asio::write(*socket, boost::asio::buffer(response), ec);
-			if (ec)
-				return;
+			std::size_t written = net::write(stream_, net::buffer(response), ec);
 			
-			if (req.method == "HEAD")
-			{
-				socket->shutdown(tcp::socket::shutdown_send);
-				socket->close();
-				return;
-			}
+			if (req.method == "HEAD" || ec)
+				return on_write(ec, written, req.keep_alive);
 
 			lt::peer_request mappings = info->map_file(file_index, range.start, 0);
             lt::peer_request end_mappings = info->map_file(file_index, range.start + range.length, 0);
@@ -561,13 +501,10 @@ private:
             }
 
 			int remaining_pieces = int(end_piece - start_piece) + 1;
+            std::size_t total_written = written;
 			for (lt::piece_index_t i = start_piece; i <= end_piece; i++)
             {
-
-				if (ec)
-					break;
-
-                auto p = handler_.schedule_piece(t, i);
+                auto p = handler_->schedule_piece(t, i);
 
                 piece_entry piece_data;
                 try
@@ -593,66 +530,104 @@ private:
                 if (i == end_piece)
                     piece_size -= end_offset;
 
-                do
-                {
-                    int written = boost::asio::write(*socket, boost::asio::buffer(buffer_start, piece_size), ec);
-                    buffer_start += written;
-                    piece_size -= written;
-                } while (!ec && piece_size);
+                written += net::write(stream_, net::buffer(buffer_start, piece_size), ec);
 
 				if (!ec)
 					remaining_pieces--;
-				
+                else
+                    break;
             }
 
-			socket->shutdown(tcp::socket::shutdown_both);
-			socket->close();
-
-			return;
+			return on_write(ec, total_written, req.keep_alive);
 		}
 
         if (req.target == "/shutdown")
         {
             std::string content = "Server shutting down...";
-            const std::string response =
-            "HTTP/1.1 403\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: " + std::to_string(content.size()) + "\r\n"
-            "\r\n" + content;
+            res.status = 200;
+            res.keep_alive = false;
+            res.headers["Connection"] = "close";
+            res.headers["Content-Type"] = "text/plain";
+            res.headers["Content-Length"] = std::to_string(content.length());
+            if (req.method == "GET")
+                res.content = std::move(content);
 
-            boost::asio::async_write(*socket, boost::asio::buffer(response),
-                [this, socket](boost::system::error_code ec, std::size_t) {
-                    if (!ec) {
-                        socket->shutdown(tcp::socket::shutdown_send);
-                        socket->close();
-                    }
-                    io_context_.stop();
-                });
-            return;
+            do_write(std::move(res));
+            return shutdown_();
         }
 
-		std::string content = "Forbidden";
-		
+        std::string content = "Forbidden";
+        res.status = 403;
+        res.headers["Content-Type"] = "text/plain";
+        res.headers["Content-Length"] = std::to_string(content.length());
+        if (req.method == "GET")
+            res.content = std::move(content);
+        
+        return do_write(std::move(res));
     }
 
-	void handle_no_method(std::shared_ptr<tcp::socket> socket)
+    void handle_post(request&& req, std::shared_ptr<net::streambuf> buffer) {
+        std::istream request_stream(buffer.get());
+        std::string body((std::istreambuf_iterator<char>(request_stream)), std::istreambuf_iterator<char>());
+        response res;
+        res.keep_alive = req.keep_alive;
+        res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
+
+		if (req.target != "/torrents")
+		{
+			std::string content = "Forbidden";
+            res.status = 403;
+            res.headers["Content-Type"] = "text/plain";
+            res.headers["Content-Length"] = std::to_string(content.length());
+            res.content = std::move(content);
+            
+            return do_write(std::move(res));
+		}
+
+		lt::add_torrent_params params = get_torrent_params(body);
+		lt::torrent_handle t = handler_->session.find_torrent(params.info_hashes.v1);
+
+		if (!t.is_valid())
+		{
+			lt::error_code ec;
+            t = handler_->session.add_torrent(params, ec);
+            if (ec)
+            {
+				std::string content = "Failed to add torrent " + ec.message();
+                res.status = 400;
+                res.headers["Content-Type"] = "text/plain";
+                res.headers["Content-Length"] = std::to_string(content.length());
+                res.content = std::move(content);
+                
+                return do_write(std::move(res));
+            }
+		}
+
+		handler_->wait_metadata(t);
+
+		std::string content = build_playlist(wrap_files(t.torrent_file()));
+        res.status = 200;
+        res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
+        res.headers["Content-Length"] = std::to_string(content.length());
+        if (req.method == "POST")
+            res.content = std::move(content);
+        
+        return do_write(std::move(res));
+    }
+
+	void handle_no_method(request&& req)
 	{
 		std::string content = "Method not allowed";
-		const std::string response =
-            "HTTP/1.1 405\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: " + std::to_string(content.size()) + "\r\n"
-            "\r\n" + content;
+        response res;
+        res.keep_alive = req.keep_alive;
+        res.status = 405;
+        res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
+        res.headers["Content-Type"] = "text/plain";
+        res.headers["Content-Length"] = std::to_string(content.length());
+        res.content = std::move(content);
 
-        boost::asio::async_write(*socket, boost::asio::buffer(response),
-            [socket](boost::system::error_code ec, std::size_t) {
-                if (!ec) {
-                    socket->shutdown(tcp::socket::shutdown_send);
-                    socket->close();
-                }
-            });
+        return do_write(std::move(res));
 	}
-
 
 	std::string build_playlist(std::vector<wrapped_file> wf)
     {
@@ -670,10 +645,10 @@ private:
         return playlist;
     }
 
-    wrapped_torrent wrap_torrent(std::shared_ptr<tcp::socket> socket, std::shared_ptr<const lt::torrent_info> info)
+    wrapped_torrent wrap_torrent(std::shared_ptr<const lt::torrent_info> info)
     {
         wrapped_torrent torrent;
-        std::vector<wrapped_file> files = wrap_files(socket, info);
+        std::vector<wrapped_file> files = wrap_files(info);
         torrent.Name = info->name();
         torrent.InfoHash = lt::aux::to_hex(info->info_hashes().v1);
         torrent.Files = files;
@@ -683,15 +658,15 @@ private:
         return torrent;
     }
 
-    std::vector<wrapped_file> wrap_files(std::shared_ptr<tcp::socket> socket, std::shared_ptr<const lt::torrent_info> info)
+    std::vector<wrapped_file> wrap_files(std::shared_ptr<const lt::torrent_info> info)
     {
         int n = info->num_files();
 
         std::vector<wrapped_file> files;
         files.reserve(n);
 
-        std::string address = socket->local_endpoint().address().to_string();
-        std::string port = std::to_string(socket->local_endpoint().port());
+        std::string address = stream_.socket().local_endpoint().address().to_string();
+        std::string port = std::to_string(stream_.socket().local_endpoint().port());
 
         for (lt::file_index_t i{0}; i < lt::file_index_t(n); i++)
         {
@@ -723,41 +698,68 @@ private:
     }
 };
 
-void run() {
-    boost::asio::io_context io_context;
-    std::size_t thread_count = std::thread::hardware_concurrency();
-    if (thread_count == 0) {
-        thread_count = 4;
+class listener {
+    net::any_io_executor ex_;
+    tcp::acceptor        acceptor_;
+    std::atomic_bool     shutdown_{};
+    std::shared_ptr<handler::alert_handler> handler_;
+
+  public:
+    listener(net::any_io_executor ex, tcp::endpoint endpoint, std::shared_ptr<handler::alert_handler> handler)
+        : ex_(ex)
+        , acceptor_(net::make_strand(ex), endpoint)
+        , handler_(handler) {
+        acceptor_.set_option(net::socket_base::reuse_address(true));
+        accept_loop();
     }
 
+    void shutdown() {
+        shutdown_ = true;
+        net::dispatch(acceptor_.get_executor(), [this] { acceptor_.cancel(); });
+    }
+
+  private:
+
+    void accept_loop() {
+        // The new connection gets its own strand
+        acceptor_.async_accept(net::make_strand(ex_), [this](boost::system::error_code ec, tcp::socket socket) {
+            if (!ec)
+                std::make_shared<http_session>(std::move(socket), handler_, std::bind(&listener::shutdown, this))
+                    ->start();
+            else
+                fail(ec, "accept");
+
+            if (!shutdown_)
+                accept_loop();
+        });
+    }
+};
+
+int main(int argc, char** argv) {
+
+    if (argc != 4) {
+        std::cerr << "Usage: libtorrent_mpv <address> <port> <threads>\n"
+                  << "Example:\n"
+                  << "    libtorrent_mpv 0.0.0.0 8080 1\n";
+        return 1;
+    }
+
+    auto const address  = net::ip::make_address(argv[1]);
+    auto const port     = static_cast<uint16_t>(std::atoi(argv[2]));
+    auto const threads  = std::max<size_t>(1, std::atoi(argv[3]));
+
+    net::thread_pool ioc{threads};
     lt::session_params params;
     params.settings.set_int(lt::settings_pack::alert_mask, lt::alert_category::status | lt::alert_category::storage | lt::alert_category::piece_progress);
     params.settings.set_int(lt::settings_pack::connection_speed, 200);
     params.settings.set_int(lt::settings_pack::smooth_connects, false);
     lt::session ses(params);
-    handler::alert_handler handler(ses);
+    auto handler = std::make_shared<handler::alert_handler>(ses);
 
-    HttpServer server(io_context, 8080, thread_count, handler);
-    std::cout << "Server running on port 8080 with " << thread_count << " threads..." << std::endl;
+    listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
+    std::cout << "Server running on port " << port << " with " << threads << " threads..." << std::endl;
 
-    std::vector<std::thread> threads;
-    for (std::size_t i = 0; i < thread_count; ++i) {
-        threads.emplace_back([&io_context]() {
-            io_context.run();
-        });
-    }
-
-    for (auto& thread : threads) {
-        thread.join();
-    }
-}
-
-int main() {
-    try {
-        run();
-    } catch (std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-    }
+    ioc.join();
 
     return 0;
 }
