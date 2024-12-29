@@ -851,6 +851,13 @@ int main(int argc, char **argv) {
   }
 
   listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
+
+  net::signal_set signals(ioc, SIGINT, SIGTERM);
+  signals.async_wait([&](boost::system::error_code ec, int) {
+    if (!ec)
+      lsnr.shutdown();
+  });
+
   std::cout << "Server running on port " << port << " with " << threads
             << " threads..." << std::endl;
 
