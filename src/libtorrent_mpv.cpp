@@ -324,6 +324,8 @@ private:
       handle_get(std::move(req));
     else if (req.method == "POST")
       handle_post(std::move(req), buffer);
+    else if (req.method == "DELETE")
+      handle_delete(std::move(req));
     else
       handle_no_method(std::move(req));
   }
@@ -622,8 +624,52 @@ private:
     res.status = 200;
     res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
     res.headers["Content-Length"] = std::to_string(content.length());
-    if (req.method == "POST")
+    res.content = std::move(content);
+
+    return do_write(std::move(res));
+  }
+
+  void handle_delete(const request &&req) {
+    response res{};
+    res.keep_alive = req.keep_alive;
+    res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
+
+    if (std::regex_match(req.target,
+                         std::regex("^/torrents/([0-9a-fA-F]{40})"))) {
+      std::string info_hash = req.target.substr(10);
+
+      lt::sha1_hash sha1;
+      lt::aux::from_hex(info_hash, sha1.data());
+      lt::torrent_handle t = handler_->session.find_torrent(sha1);
+
+      if (!t.is_valid()) {
+        std::string content = "Torrent not found";
+        res.status = 404;
+        res.headers["Content-Type"] = "text/plain";
+        res.headers["Content-Length"] = std::to_string(content.length());
+        res.content = std::move(content);
+
+        return do_write(std::move(res));
+      }
+
+      handler_->session.remove_torrent(
+          t, req.target.find("?DeleteFiles=true") == std::string::npos
+                 ? ~lt::session_handle::delete_files
+                 : lt::session_handle::delete_files);
+      std::string content = "Torrent successfully deleted";
+      res.status = 200;
+      res.headers["Content-Type"] = "text/plain";
+      res.headers["Content-Length"] = std::to_string(content.length());
       res.content = std::move(content);
+
+      return do_write(std::move(res));
+    }
+
+    std::string content = "Forbidden";
+    res.status = 403;
+    res.headers["Content-Type"] = "text/plain";
+    res.headers["Content-Length"] = std::to_string(content.length());
+    res.content = std::move(content);
 
     return do_write(std::move(res));
   }
