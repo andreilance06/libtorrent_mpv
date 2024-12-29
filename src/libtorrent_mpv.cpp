@@ -106,7 +106,7 @@ static lt::add_torrent_params get_torrent_params(std::string id) {
   if (!ec)
     return params;
 
-  if (std::regex_match(id, std::regex("^([0-9a-fA-F]{40})$"))) {
+  if (std::regex_search(id, std::regex("^([0-9a-fA-F]{40})$"))) {
     lt::sha1_hash sha1;
     lt::aux::from_hex(id, sha1.data());
     params.info_hashes.v1 = sha1;
@@ -386,8 +386,8 @@ private:
       return do_write(std::move(res));
     }
 
-    if (std::regex_match(req.target,
-                         std::regex("^/torrents/([0-9a-fA-F]{40})$"))) {
+    if (std::regex_search(req.target,
+                          std::regex("^/torrents/([0-9a-fA-F]{40})$"))) {
       std::string info_hash = req.target.substr(10);
 
       lt::sha1_hash sha1;
@@ -417,8 +417,8 @@ private:
       return do_write(std::move(res));
     }
 
-    if (std::regex_match(req.target,
-                         std::regex("^/torrents/([0-9a-fA-F]{40})/(.+)$"))) {
+    if (std::regex_search(req.target,
+                          std::regex("^/torrents/([0-9a-fA-F]{40})/(.+)$"))) {
       std::stringstream decoded;
       decoded << boost::urls::decode_view(req.target);
 
@@ -637,9 +637,9 @@ private:
     res.keep_alive = req.keep_alive;
     res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
 
-    if (std::regex_match(req.target,
-                         std::regex("^/torrents/([0-9a-fA-F]{40})"))) {
-      std::string info_hash = req.target.substr(10);
+    if (std::regex_search(req.target,
+                          std::regex("^/torrents/([0-9a-fA-F]{40})"))) {
+      std::string info_hash = req.target.substr(10, 40);
 
       lt::sha1_hash sha1;
       lt::aux::from_hex(info_hash, sha1.data());
@@ -655,10 +655,12 @@ private:
         return do_write(std::move(res));
       }
 
-      handler_->session.remove_torrent(
-          t, req.target.find("?DeleteFiles=true") == std::string::npos
-                 ? ~lt::session_handle::delete_files
-                 : lt::session_handle::delete_files);
+      if (req.target.find("?DeleteFiles=true") == std::string::npos)
+        handler_->session.remove_torrent(t);
+      else
+        handler_->session.remove_torrent(
+            t, lt::remove_flags_t{(unsigned char)(1U)});
+
       std::string content = "Torrent successfully deleted";
       res.status = 200;
       res.headers["Content-Type"] = "text/plain";
