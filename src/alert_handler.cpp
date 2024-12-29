@@ -1,15 +1,21 @@
+#include <boost/filesystem.hpp>
 #include <condition_variable>
+#include <fstream>
 #include <future>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/hex.hpp>
 #include <libtorrent/session.hpp>
+#include <libtorrent/write_resume_data.hpp>
 #include <mutex>
+#include <thread>
 
 #include "alert_handler.hpp"
 
 using namespace handler;
+namespace fs = boost::filesystem;
 
-alert_handler::alert_handler(lt::session &ses) : session(ses) {
+alert_handler::alert_handler(lt::session &ses, fs::path path)
+    : session(ses), save_path(path), stop_(false) {
   alert_thread_ = std::thread([this] {
     while (!stop_) {
       std::vector<lt::alert *> alerts;
@@ -44,6 +50,14 @@ void alert_handler::handle_alert(lt::alert *a) {
   case lt::torrent_paused_alert::alert_type:
     handle_torrent_interrupt(
         lt::alert_cast<lt::torrent_paused_alert>(a)->handle.info_hashes());
+    break;
+  case lt::save_resume_data_alert::alert_type:
+    handle_save_resume_data_alert(
+        lt::alert_cast<lt::save_resume_data_alert>(a));
+    break;
+  case lt::torrent_finished_alert::alert_type:
+    handle_torrent_finished_alert(
+        lt::alert_cast<lt::torrent_finished_alert>(a));
     break;
   }
 }
@@ -101,6 +115,14 @@ void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
     priorities.push_back(std::pair<lt::piece_index_t, lt::download_priority_t>(
         i, lt::dont_download));
   t.prioritize_pieces(priorities);
+
+  auto resume_file = save_path / "resume_data" /
+                     (lt::aux::to_hex(t.info_hashes().v1) + ".fastresume");
+
+  if (fs::exists(resume_file) && fs::is_regular_file(resume_file))
+    return;
+
+  t.save_resume_data();
 }
 
 void alert_handler::handle_metadata_received_alert(
@@ -136,6 +158,22 @@ void alert_handler::handle_torrent_interrupt(lt::info_hash_t info_hash) {
       i->promise->set_exception(std::current_exception());
   }
   requests_.erase(first, last);
+}
+
+void alert_handler::handle_save_resume_data_alert(
+    lt::save_resume_data_alert *a) {
+  auto path = save_path / "resume_data" /
+              (lt::aux::to_hex(a->handle.info_hashes().v1) + ".fastresume");
+
+  std::ofstream out(path.c_str(), std::ios_base::binary | std::ios_base::trunc);
+  std::vector<char> buf = lt::write_resume_data_buf(a->params);
+  out.write(buf.data(), buf.size());
+  out.close();
+}
+
+void alert_handler::handle_torrent_finished_alert(
+    lt::torrent_finished_alert *a) {
+  a->handle.save_resume_data();
 }
 
 std::shared_future<piece_entry>

@@ -3,13 +3,17 @@
 #include <algorithm>
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
+#include <boost/filesystem.hpp>
 #include <boost/json.hpp>
+#include <boost/program_options.hpp>
 #include <boost/url.hpp>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/entry.hpp>
 #include <libtorrent/magnet_uri.hpp>
+#include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
 #include <map>
 #include <regex>
@@ -107,6 +111,19 @@ static lt::add_torrent_params get_torrent_params(std::string id) {
     lt::aux::from_hex(id, sha1.data());
     params.info_hashes.v1 = sha1;
     return params;
+  }
+
+  auto const ext = [&id] {
+    auto const pos = id.rfind(".");
+    if (pos == std::string::npos)
+      return std::string{};
+    return id.substr(pos);
+  }();
+
+  if (ext == ".fastresume") {
+    std::ifstream in(id, std::ios_base::binary);
+    std::vector<char> buf(std::istreambuf_iterator<char>(in), {});
+    return lt::read_resume_data(buf);
   }
 
   return lt::add_torrent_params{};
@@ -294,13 +311,13 @@ private:
         trim(key);
         trim(value);
         req.headers[key] = value;
-        if (key == "Connection")
-          req.keep_alive = (value == "keep-alive");
       }
     }
 
     if (!req.headers.count("Connection"))
       req.keep_alive = true;
+    else
+      req.keep_alive = req.headers["Connection"] == "keep-alive";
 
     // Handle the request based on the method
     if (req.method == "GET" || req.method == "HEAD")
@@ -581,6 +598,7 @@ private:
     }
 
     lt::add_torrent_params params = get_torrent_params(body);
+    params.save_path = handler_->save_path.string();
     lt::torrent_handle t =
         handler_->session.find_torrent(params.info_hashes.v1);
 
@@ -638,15 +656,11 @@ private:
   }
 
   wrapped_torrent wrap_torrent(std::shared_ptr<const lt::torrent_info> info) {
-    wrapped_torrent torrent;
     std::vector<wrapped_file> files = wrap_files(info);
-    torrent.Name = info->name();
-    torrent.InfoHash = lt::aux::to_hex(info->info_hashes().v1);
-    torrent.Files = files;
-    torrent.Length = info->total_size();
-    torrent.Playlist = build_playlist(files);
 
-    return torrent;
+    return wrapped_torrent{info->name(),
+                           lt::aux::to_hex(info->info_hashes().v1), files,
+                           info->total_size(), build_playlist(files)};
   }
 
   std::vector<wrapped_file>
@@ -693,13 +707,14 @@ private:
 class listener {
   net::any_io_executor ex_;
   tcp::acceptor acceptor_;
-  std::atomic_bool shutdown_;
   std::shared_ptr<handler::alert_handler> handler_;
+  std::atomic_bool shutdown_;
 
 public:
   listener(net::any_io_executor ex, tcp::endpoint endpoint,
            std::shared_ptr<handler::alert_handler> handler)
-      : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler) {
+      : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
+        shutdown_(false) {
     acceptor_.set_option(net::socket_base::reuse_address(true));
     accept_loop();
   }
@@ -730,16 +745,36 @@ private:
 
 int main(int argc, char **argv) {
 
-  if (argc != 4) {
-    std::cerr << "Usage: libtorrent_mpv <address> <port> <threads>\n"
-              << "Example:\n"
-              << "    libtorrent_mpv 0.0.0.0 8080 1\n";
+  namespace po = boost::program_options;
+  namespace fs = boost::filesystem;
+
+  po::options_description desc("Allowed options");
+  desc.add_options()("help", "produce help")(
+      "address", po::value<std::string>()->default_value("0.0.0.0"),
+      "HTTP server address")("port", po::value<uint16_t>()->default_value(1337),
+                             "HTTP server port")(
+      "threads",
+      po::value<size_t>()->default_value(std::thread::hardware_concurrency()),
+      "HTTP server threads")("save-path",
+                             po::value<fs::path>()->default_value("."),
+                             "Directory where downloaded files are stored");
+
+  po::variables_map vm;
+  po::store(po::parse_command_line(argc, argv, desc), vm);
+  po::notify(vm);
+
+  auto const address =
+      net::ip::make_address(vm.at("address").as<std::string>());
+  auto const port = vm.at("port").as<uint16_t>();
+  auto const threads = std::max<size_t>(1, vm.at("threads").as<size_t>());
+  auto const save_path = vm.at("save-path").as<fs::path>();
+
+  auto const resume_path = save_path / "resume_data";
+
+  if (!(fs::exists(save_path) && fs::is_directory(save_path))) {
+    std::cerr << "Invalid save path '" << save_path << "'" << std::endl;
     return 1;
   }
-
-  auto const address = net::ip::make_address(argv[1]);
-  auto const port = static_cast<uint16_t>(std::atoi(argv[2]));
-  auto const threads = std::max<size_t>(1, std::atoi(argv[3]));
 
   net::thread_pool ioc{threads};
   lt::session_params params;
@@ -747,12 +782,22 @@ int main(int argc, char **argv) {
                           lt::alert_category::status |
                               lt::alert_category::storage |
                               lt::alert_category::piece_progress);
+  params.settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
   params.settings.set_int(lt::settings_pack::connection_speed, 200);
   params.settings.set_int(lt::settings_pack::smooth_connects, false);
   lt::session ses(params);
-  auto handler = std::make_shared<handler::alert_handler>(ses);
+  auto handler = std::make_shared<handler::alert_handler>(ses, save_path);
 
-  listener lsnr{ioc.get_executor(), tcp::endpoint{address, port}, handler};
+  if (!fs::exists(resume_path))
+    fs::create_directory(resume_path);
+
+  for (auto &entry : fs::directory_iterator(resume_path)) {
+    if (entry.path().extension() != ".fastresume")
+      continue;
+    ses.add_torrent(get_torrent_params(entry.path().string()));
+  }
+
+  listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
   std::cout << "Server running on port " << port << " with " << threads
             << " threads..." << std::endl;
 

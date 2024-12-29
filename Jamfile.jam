@@ -12,7 +12,9 @@ sources =
 libs = 
     /libtorrent//torrent
     ws2_32
+    /boost//filesystem
     /boost//json
+    /boost//program_options
     /boost//url ;
 
 exe libtorrent_mpv : src/$(sources).cpp :
