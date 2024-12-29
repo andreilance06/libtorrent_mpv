@@ -170,10 +170,9 @@ void alert_handler::handle_torrent_finished_alert(
 std::shared_future<piece_entry>
 alert_handler::schedule_piece(lt::torrent_handle &t,
                               lt::piece_index_t const piece) {
-  std::unique_lock<std::mutex> l(mtx_);
+  std::lock_guard<std::mutex> l(mtx_);
   auto iter = requests_.insert(piece_request{
       t.info_hashes(), piece, std::make_shared<std::promise<piece_entry>>()});
-  l.unlock();
 
   if (t.have_piece(piece))
     t.read_piece(piece);
