@@ -59,6 +59,9 @@ void alert_handler::handle_alert(lt::alert *a) {
     handle_torrent_finished_alert(
         lt::alert_cast<lt::torrent_finished_alert>(a));
     break;
+  case lt::torrent_deleted_alert::alert_type:
+    handle_torrent_deleted_alert(lt::alert_cast<lt::torrent_deleted_alert>(a));
+    break;
   }
 }
 
@@ -165,6 +168,13 @@ void alert_handler::handle_save_resume_data_alert(
 void alert_handler::handle_torrent_finished_alert(
     lt::torrent_finished_alert *a) {
   a->handle.save_resume_data();
+}
+
+void alert_handler::handle_torrent_deleted_alert(lt::torrent_deleted_alert *a) {
+  boost::system::error_code ec;
+  fs::remove(save_path / "resume_data" /
+                 (lt::aux::to_hex(a->info_hashes.v1) + ".fastresume"),
+             ec);
 }
 
 std::shared_future<piece_entry>

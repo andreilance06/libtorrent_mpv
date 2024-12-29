@@ -72,6 +72,8 @@ private:
   void handle_save_resume_data_alert(lt::save_resume_data_alert *a);
 
   void handle_torrent_finished_alert(lt::torrent_finished_alert *a);
+
+  void handle_torrent_deleted_alert(lt::torrent_deleted_alert *a);
 };
 } // namespace handler
 
