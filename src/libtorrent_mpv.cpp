@@ -516,7 +516,9 @@ private:
       for (lt::piece_index_t i = start_piece;
            i <= std::min(end_piece, lt::piece_index_t(int(start_piece) + 19));
            i++) {
-        t.set_piece_deadline(i, int(i - start_piece) * 2000);
+        if (t.have_piece(i))
+          continue;
+        t.set_piece_deadline(i, int(i - start_piece) * 2000 + 15000);
       }
 
       int remaining_pieces = int(end_piece - start_piece) + 1;
@@ -527,8 +529,9 @@ private:
         piece_entry piece_data;
         try {
           piece_data = p.get();
-          if (lt::piece_index_t(int(i) + 20) <= end_piece)
-            t.set_piece_deadline(lt::piece_index_t(int(i) + 20), 20 * 2000);
+          auto buffer_piece = lt::piece_index_t(int(i) + 20);
+          if (buffer_piece <= end_piece && !t.have_piece(buffer_piece))
+            t.set_piece_deadline(buffer_piece, 20 * 2000 + 15000);
         } catch (const std::future_error &) {
           break;
         }
