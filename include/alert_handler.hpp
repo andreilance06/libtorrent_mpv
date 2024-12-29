@@ -11,14 +11,14 @@
 #include <mutex>
 
 struct piece_entry {
+  lt::piece_index_t piece;
   boost::shared_array<char> buffer;
-  int size{-1};
-  lt::piece_index_t piece{-1};
+  int size;
 };
 
 struct piece_request {
   lt::info_hash_t info_hash;
-  lt::piece_index_t piece{-1};
+  lt::piece_index_t piece;
   std::shared_ptr<std::promise<piece_entry>> promise;
 
   inline bool operator==(piece_request const &rq) const {
@@ -53,7 +53,6 @@ private:
 
   typedef std::multiset<piece_request> requests_t;
   requests_t requests_;
-  std::map<lt::info_hash_t, std::set<lt::piece_index_t>> have_pieces_;
 
   std::mutex metadata_mtx_;
   std::condition_variable metadata_cv_;

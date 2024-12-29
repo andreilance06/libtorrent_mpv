@@ -64,37 +64,29 @@ void alert_handler::handle_alert(lt::alert *a) {
 
 void alert_handler::handle_read_piece_alert(lt::read_piece_alert *a) {
   lt::torrent_handle t = a->handle;
-  piece_request rq;
-  rq.info_hash = t.info_hashes();
-  rq.piece = a->piece;
   using iter = requests_t::iterator;
 
   std::lock_guard<std::mutex> l(mtx_);
-  std::pair<iter, iter> range = requests_.equal_range(rq);
+  std::pair<iter, iter> range =
+      requests_.equal_range(piece_request{t.info_hashes(), a->piece});
+
   if (range.first == range.second)
     return;
 
-  piece_entry pe;
-  pe.buffer = a->buffer;
-  pe.piece = a->piece;
-  pe.size = a->size;
   for (iter i = range.first; i != range.second; i++)
-    i->promise->set_value(pe);
+    i->promise->set_value(piece_entry{a->piece, a->buffer, a->size});
 
   requests_.erase(range.first, range.second);
 }
 
 void alert_handler::handle_piece_finished_alert(lt::piece_finished_alert *a) {
   lt::torrent_handle t = a->handle;
-  piece_request rq;
-  rq.info_hash = t.info_hashes();
-  rq.piece = a->piece_index;
-  have_pieces_[rq.info_hash].insert(a->piece_index);
 
   using iter = requests_t::iterator;
 
   std::lock_guard<std::mutex> l(mtx_);
-  std::pair<iter, iter> range = requests_.equal_range(rq);
+  std::pair<iter, iter> range =
+      requests_.equal_range(piece_request{t.info_hashes(), a->piece_index});
   if (range.first == range.second)
     return;
 
@@ -141,8 +133,7 @@ void alert_handler::handle_metadata_received_alert(
 }
 
 void alert_handler::handle_torrent_interrupt(lt::info_hash_t info_hash) {
-  piece_request rq;
-  rq.info_hash = info_hash;
+  piece_request rq{info_hash};
 
   rq.piece = lt::piece_index_t{0};
   typedef requests_t::iterator iter;
@@ -179,23 +170,15 @@ void alert_handler::handle_torrent_finished_alert(
 std::shared_future<piece_entry>
 alert_handler::schedule_piece(lt::torrent_handle &t,
                               lt::piece_index_t const piece) {
-  piece_request rq;
-  rq.info_hash = t.info_hashes();
-  rq.piece = piece;
-  rq.promise.reset(new std::promise<piece_entry>());
-
   std::unique_lock<std::mutex> l(mtx_);
-  requests_.insert(rq);
+  auto iter = requests_.insert(piece_request{
+      t.info_hashes(), piece, std::make_shared<std::promise<piece_entry>>()});
   l.unlock();
 
-  if (have_pieces_[rq.info_hash].count(piece)) {
+  if (t.have_piece(piece))
     t.read_piece(piece);
-  } else if (t.have_piece(piece)) {
-    have_pieces_[rq.info_hash].insert(piece);
-    t.read_piece(piece);
-  }
 
-  return std::shared_future<piece_entry>(rq.promise->get_future());
+  return std::shared_future<piece_entry>(iter->promise->get_future());
 }
 
 void alert_handler::wait_metadata(lt::torrent_handle &t) {
