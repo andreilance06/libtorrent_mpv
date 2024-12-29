@@ -67,7 +67,7 @@ private:
 
   void handle_metadata_received_alert(lt::metadata_received_alert *a);
 
-  void handle_torrent_interrupt(lt::info_hash_t info_hash);
+  void handle_torrent_removed_alert(lt::torrent_removed_alert *a);
 
   void handle_save_resume_data_alert(lt::save_resume_data_alert *a);
 

@@ -44,12 +44,7 @@ void alert_handler::handle_alert(lt::alert *a) {
         lt::alert_cast<lt::metadata_received_alert>(a));
     break;
   case lt::torrent_removed_alert::alert_type:
-    handle_torrent_interrupt(
-        lt::alert_cast<lt::torrent_removed_alert>(a)->info_hashes);
-    break;
-  case lt::torrent_paused_alert::alert_type:
-    handle_torrent_interrupt(
-        lt::alert_cast<lt::torrent_paused_alert>(a)->handle.info_hashes());
+    handle_torrent_removed_alert(lt::alert_cast<lt::torrent_removed_alert>(a));
     break;
   case lt::save_resume_data_alert::alert_type:
     handle_save_resume_data_alert(
@@ -135,8 +130,8 @@ void alert_handler::handle_metadata_received_alert(
   t.prioritize_pieces(priorities);
 }
 
-void alert_handler::handle_torrent_interrupt(lt::info_hash_t info_hash) {
-  piece_request rq{info_hash};
+void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
+  piece_request rq{a->info_hashes};
 
   rq.piece = lt::piece_index_t{0};
   typedef requests_t::iterator iter;
