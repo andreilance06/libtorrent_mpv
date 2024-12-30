@@ -834,10 +834,12 @@ int main(int argc, char **argv) {
                               lt::alert_category::storage |
                               lt::alert_category::piece_progress);
   params.settings.set_int(lt::settings_pack::connection_speed, 200);
+  params.settings.set_int(lt::settings_pack::connections_limit, 500);
   params.settings.set_int(lt::settings_pack::smooth_connects, false);
   params.settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
   params.settings.set_bool(lt::settings_pack::close_redundant_connections,
                            false);
+  params.settings.set_bool(lt::settings_pack::strict_end_game_mode, false);
   lt::session ses(params);
   auto handler = std::make_shared<handler::alert_handler>(ses, save_path);
 
