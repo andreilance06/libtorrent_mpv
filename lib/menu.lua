@@ -68,19 +68,19 @@ function Menu.create_torrent_menu(menu_id, index)
     Config.save_opts()
   end))
 
-  table.insert(client_control_items, Menu.new_prop({
-    title = "Close torrent client on mpv exit",
-    icon = Config.opts.CloseClientOnMpvExit and "check_box" or "check_box_outline_blank",
-    value = Config.opts.CloseClientOnMpvExit and "toggle_off" or "toggle_on"
-  }, function(event)
-    if event.value == "toggle_off" then
-      Config.opts.CloseClientOnMpvExit = false
-    elseif event.value == "toggle_on" then
-      Config.opts.CloseClientOnMpvExit = true
-    end
-    Menu.update()
-    Config.save_opts()
-  end))
+  -- table.insert(client_control_items, Menu.new_prop({
+  --   title = "Close torrent client on mpv exit",
+  --   icon = Config.opts.CloseClientOnMpvExit and "check_box" or "check_box_outline_blank",
+  --   value = Config.opts.CloseClientOnMpvExit and "toggle_off" or "toggle_on"
+  -- }, function(event)
+  --   if event.value == "toggle_off" then
+  --     Config.opts.CloseClientOnMpvExit = false
+  --   elseif event.value == "toggle_on" then
+  --     Config.opts.CloseClientOnMpvExit = true
+  --   end
+  --   Menu.update()
+  --   Config.save_opts()
+  -- end))
 
   table.insert(Menu.root_items, {
     title = "Client Controls",

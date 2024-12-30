@@ -5,7 +5,7 @@ local Config = require("lib/config")
 
 local State = {
   client_running = false,
-  launched_by_us = false,
+  -- launched_by_us = false,
   torrents = {},
 }
 

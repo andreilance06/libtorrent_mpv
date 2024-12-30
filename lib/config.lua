@@ -7,8 +7,8 @@ local Config = {
     port = 1337,
     ["save-path"] = os.getenv("tmp"),
     StartClientOnMpvLaunch = true,
-    CloseClientOnMpvExit = true,
-    CloseClientOnNoTorrentFiles = false
+    -- CloseClientOnMpvExit = true,
+    -- CloseClientOnNoTorrentFiles = false
   }
 }
 

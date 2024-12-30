@@ -32,9 +32,9 @@ local function on_file_loaded()
     end
   end
 
-  if next(State.torrents) == nil and Config.opts.CloseClientOnNoTorrentFiles then
-    Client.close()
-  end
+  -- if next(State.torrents) == nil and Config.opts.CloseClientOnNoTorrentFiles then
+  --   Client.close()
+  -- end
 end
 
 -- Script initialization
@@ -53,15 +53,15 @@ local function init()
   -- Register MPV event handlers
   mp.add_hook("on_load", 50, on_file_loaded)
 
-  if Config.opts.CloseClientOnMpvExit then
-    mp.register_event("shutdown", function() Client.close() end)
-  end
+  -- if Config.opts.CloseClientOnMpvExit then
+  --   mp.register_event("shutdown", function() Client.close() end)
+  -- end
 
   if Config.opts.StartClientOnMpvLaunch then
     Client.start()
   elseif State.is_running() then
     State.client_running = true
-    State.launched_by_us = false
+    -- State.launched_by_us = false
   end
 end
 

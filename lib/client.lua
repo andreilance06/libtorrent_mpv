@@ -31,7 +31,7 @@ function Client.start()
 
   msg.debug("Started torrent server")
   State.client_running = true
-  State.launched_by_us = true
+  -- State.launched_by_us = true
   return true
 end
 
@@ -40,10 +40,10 @@ function Client.close()
     msg.debug("Client is already closed")
     return true
   end
-  if not State.launched_by_us then
-    msg.debug("Can't close client launched by another process")
-    return false
-  end
+  -- if not State.launched_by_us then
+  --   msg.debug("Can't close client launched by another process")
+  --   return false
+  -- end
   local cmd = mp.command_native({
     name = "subprocess",
     playback_only = false,
@@ -57,7 +57,7 @@ function Client.close()
   end
 
   State.client_running = false
-  State.launched_by_us = false
+  -- State.launched_by_us = false
   State.torrents = {}
   msg.debug("Closed torrent server")
   return true
