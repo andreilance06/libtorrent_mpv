@@ -760,19 +760,26 @@ class listener {
   tcp::acceptor acceptor_;
   std::shared_ptr<handler::alert_handler> handler_;
   std::atomic_bool shutdown_;
+  net::signal_set signals_;
 
 public:
   listener(net::any_io_executor ex, tcp::endpoint endpoint,
            std::shared_ptr<handler::alert_handler> handler)
       : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
-        shutdown_(false) {
-    acceptor_.set_option(net::socket_base::reuse_address(true));
+        shutdown_(false), signals_(ex, SIGINT, SIGTERM) {
+    signals_.async_wait([this](boost::system::error_code ec, int) {
+      if (!ec)
+        shutdown();
+    });
     accept_loop();
   }
 
   void shutdown() {
     shutdown_ = true;
-    net::dispatch(acceptor_.get_executor(), [this] { acceptor_.cancel(); });
+    net::dispatch(acceptor_.get_executor(), [this] {
+      signals_.cancel();
+      acceptor_.cancel();
+    });
   }
 
 private:
@@ -853,12 +860,6 @@ int main(int argc, char **argv) {
   }
 
   listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
-
-  net::signal_set signals(ioc, SIGINT, SIGTERM);
-  signals.async_wait([&](boost::system::error_code ec, int) {
-    if (!ec)
-      lsnr.shutdown();
-  });
 
   std::cout << "Server running on port " << port << " with " << threads
             << " threads..." << std::endl;
