@@ -6,6 +6,7 @@ local Config = {
     address = "0.0.0.0",
     port = 1337,
     ["save-path"] = os.getenv("tmp"),
+    threads = 8,
     StartClientOnMpvLaunch = true,
     -- CloseClientOnMpvExit = true,
     -- CloseClientOnNoTorrentFiles = false
