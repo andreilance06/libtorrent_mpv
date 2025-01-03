@@ -514,11 +514,11 @@ private:
            (int64_t(int(end_piece)) * info->files().piece_length()));
 
       for (lt::piece_index_t i = start_piece;
-           i <= std::min(end_piece, lt::piece_index_t(int(start_piece) + 19));
+           i <= std::min(end_piece, lt::piece_index_t(int(start_piece) + 4));
            i++) {
         if (t.have_piece(i))
           continue;
-        t.set_piece_deadline(i, int(i - start_piece) * 2000 + 15000);
+        t.set_piece_deadline(i, int(i - start_piece) * 5000);
       }
 
       int remaining_pieces = int(end_piece - start_piece) + 1;
@@ -529,9 +529,9 @@ private:
         piece_entry piece_data;
         try {
           piece_data = p.get();
-          auto buffer_piece = lt::piece_index_t(int(i) + 20);
+          auto buffer_piece = lt::piece_index_t(int(i) + 5);
           if (buffer_piece <= end_piece && !t.have_piece(buffer_piece))
-            t.set_piece_deadline(buffer_piece, 20 * 2000 + 15000);
+            t.set_piece_deadline(buffer_piece, 5 * 5000);
         } catch (const std::future_error &) {
           break;
         }
@@ -841,12 +841,10 @@ int main(int argc, char **argv) {
                               lt::alert_category::storage |
                               lt::alert_category::piece_progress);
   params.settings.set_int(lt::settings_pack::connection_speed, 200);
-  params.settings.set_int(lt::settings_pack::connections_limit, 500);
   params.settings.set_int(lt::settings_pack::smooth_connects, false);
   params.settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
   params.settings.set_bool(lt::settings_pack::close_redundant_connections,
                            false);
-  params.settings.set_bool(lt::settings_pack::strict_end_game_mode, false);
   lt::session ses(params);
   auto handler = std::make_shared<handler::alert_handler>(ses, save_path);
 
