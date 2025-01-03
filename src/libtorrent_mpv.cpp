@@ -250,22 +250,74 @@ void fail(beast::error_code ec, char const *what) {
   std::cerr << what << ": " << ec.message() << "\n";
 }
 
+class stop_token {
+  std::atomic<bool> stop_{false};
+  mutable std::mutex callback_mtx_;
+  std::unordered_map<std::size_t, std::function<void()>> callbacks_;
+  std::size_t next_callback_id_ = 0; // Unique ID for each callback
+
+public:
+  stop_token() = default;
+
+  // Request stop and invoke callbacks
+  void request_stop() {
+    std::lock_guard<std::mutex> lock(callback_mtx_);
+    if (stop_.exchange(true, std::memory_order_relaxed)) {
+      return; // Stop already requested
+    }
+    for (const auto &[id, cb] : callbacks_) {
+      if (cb) {
+        cb();
+      }
+    }
+  }
+
+  // Check if stop is requested
+  bool stop_requested() const { return stop_.load(std::memory_order_relaxed); }
+
+  // Register a callback, returns a unique ID
+  std::size_t add_callback(std::function<void()> callback) {
+    std::lock_guard<std::mutex> lock(callback_mtx_);
+    if (stop_requested()) {
+      if (callback) {
+        callback();
+      }
+      return 0; // Callback executed immediately, no ID needed
+    } else {
+      std::size_t id = next_callback_id_++;
+      callbacks_[id] = std::move(callback);
+      return id;
+    }
+  }
+
+  // Remove a callback by its ID
+  void remove_callback(std::size_t id) {
+    std::lock_guard<std::mutex> lock(callback_mtx_);
+    callbacks_.erase(id);
+  }
+};
+
 class http_session : public std::enable_shared_from_this<http_session> {
   beast::tcp_stream stream_;
   tcp::endpoint ep_ = stream_.socket().remote_endpoint();
   std::shared_ptr<handler::alert_handler> handler_;
   std::function<void()> shutdown_;
+  stop_token &token_;
+  std::size_t id_;
 
 public:
   http_session(tcp::socket &&socket,
                std::shared_ptr<handler::alert_handler> handler,
-               std::function<void()> shutdown)
-      : stream_(std::move(socket)), handler_(handler), shutdown_(shutdown) {
+               std::function<void()> shutdown, stop_token &token)
+      : stream_(std::move(socket)), handler_(handler), shutdown_(shutdown),
+        token_(token) {
     std::cerr << "HTTP session (" << ep_ << ")" << std::endl;
+    id_ = token_.add_callback([this]() { stream_.cancel(); });
   }
 
   ~http_session() {
     std::cerr << "HTTP session destroyed (" << ep_ << ")" << std::endl;
+    token_.remove_callback(id_);
   }
 
   void start() {
@@ -759,14 +811,14 @@ class listener {
   net::any_io_executor ex_;
   tcp::acceptor acceptor_;
   std::shared_ptr<handler::alert_handler> handler_;
-  std::atomic_bool shutdown_;
   net::signal_set signals_;
+  stop_token token_;
 
 public:
   listener(net::any_io_executor ex, tcp::endpoint endpoint,
            std::shared_ptr<handler::alert_handler> handler)
       : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
-        shutdown_(false), signals_(ex, SIGINT, SIGTERM) {
+        signals_(ex, SIGINT, SIGTERM) {
     signals_.async_wait([this](boost::system::error_code ec, int) {
       if (!ec)
         shutdown();
@@ -775,11 +827,9 @@ public:
   }
 
   void shutdown() {
-    shutdown_ = true;
-    net::dispatch(acceptor_.get_executor(), [this] {
-      signals_.cancel();
-      acceptor_.cancel();
-    });
+    signals_.cancel();
+    acceptor_.cancel();
+    token_.request_stop();
   }
 
 private:
@@ -790,12 +840,13 @@ private:
         [this](boost::system::error_code ec, tcp::socket socket) {
           if (!ec)
             std::make_shared<http_session>(std::move(socket), handler_,
-                                           std::bind(&listener::shutdown, this))
+                                           std::bind(&listener::shutdown, this),
+                                           token_)
                 ->start();
           else
             fail(ec, "accept");
 
-          if (!shutdown_)
+          if (!token_.stop_requested())
             accept_loop();
         });
   }
