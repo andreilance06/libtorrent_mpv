@@ -356,7 +356,7 @@ private:
 
   void do_close() {
     boost::system::error_code ec;
-    stream_.socket().shutdown(tcp::socket::shutdown_both, ec);
+    stream_.socket().shutdown(tcp::socket::shutdown_send, ec);
   }
 
   void handle_get(const request &&req) {
