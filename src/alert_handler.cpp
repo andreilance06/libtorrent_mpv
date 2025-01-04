@@ -8,6 +8,8 @@
 #include <mutex>
 #include <thread>
 
+#include <iostream>
+
 #include "alert_handler.hpp"
 
 using namespace handler;
@@ -23,6 +25,8 @@ alert_handler::alert_handler(lt::session &ses, fs::path path)
         handle_alert(a);
       session.wait_for_alert(std::chrono::seconds(1));
     }
+
+    std::cout << "Alert thread exit" << std::endl;
   });
 }
 
@@ -139,12 +143,8 @@ void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
   iter first = requests_.lower_bound(rq);
   rq.piece = lt::piece_index_t{INT_MAX};
   iter last = requests_.upper_bound(rq);
-  try {
-    throw std::runtime_error("Torrent was interrupted");
-  } catch (...) {
-    for (iter i = first; i != last; i++)
-      i->promise->set_exception(std::current_exception());
-  }
+  for (iter i = first; i != last; i++)
+    i->promise->set_value(piece_entry{lt::piece_index_t{-1}, {}, -1});
   requests_.erase(first, last);
 }
 
@@ -191,7 +191,11 @@ void alert_handler::wait_metadata(lt::torrent_handle &t) {
   }
 }
 
-alert_handler::~alert_handler() {
+void alert_handler::stop() {
   stop_ = true;
   alert_thread_.join();
+  std::lock_guard<std::mutex> l(mtx_);
+  for (auto &r : requests_)
+    r.promise->set_value(piece_entry{lt::piece_index_t{-1}, {}, -1});
+  requests_.clear();
 }

@@ -298,18 +298,16 @@ class http_session : public std::enable_shared_from_this<http_session> {
   tcp::socket socket_;
   tcp::endpoint ep_ = socket_.remote_endpoint();
   std::shared_ptr<handler::alert_handler> handler_;
-  std::function<void()> shutdown_;
   stop_token &token_;
   std::size_t id_;
 
 public:
   http_session(tcp::socket &&socket,
                std::shared_ptr<handler::alert_handler> handler,
-               std::function<void()> shutdown, stop_token &token)
-      : socket_(std::move(socket)), handler_(handler), shutdown_(shutdown),
-        token_(token) {
+               stop_token &token)
+      : socket_(std::move(socket)), handler_(handler), token_(token) {
     std::cerr << "HTTP session (" << ep_ << ")" << std::endl;
-    id_ = token_.add_callback([this]() { socket_.cancel(); });
+    id_ = token_.add_callback([this]() { socket_.close(); });
   }
 
   ~http_session() {
@@ -562,27 +560,23 @@ private:
           ((range.start + range.length) -
            (int64_t(int(end_piece)) * info->files().piece_length()));
 
-      for (lt::piece_index_t i = start_piece;
-           i <= std::min(end_piece, lt::piece_index_t(int(start_piece) + 4));
-           i++) {
-        if (t.have_piece(i))
-          continue;
-        t.set_piece_deadline(i, int(i - start_piece) * 5000);
-      }
+      t.set_piece_deadline(start_piece, 5000);
 
-      int remaining_pieces = int(end_piece - start_piece) + 1;
       std::size_t total_written = written;
+      int readahead_pieces = 1;
       for (lt::piece_index_t i = start_piece; i <= end_piece; i++) {
         auto p = handler_->schedule_piece(t, i);
 
-        piece_entry piece_data;
-        try {
-          piece_data = p.get();
-          auto buffer_piece = lt::piece_index_t(int(i) + 5);
-          if (buffer_piece <= end_piece && !t.have_piece(buffer_piece))
-            t.set_piece_deadline(buffer_piece, 5 * 5000);
-        } catch (const std::future_error &) {
+        piece_entry piece_data = p.get();
+        if (piece_data.size < 0)
           break;
+
+        auto buffer_pieces =
+            std::min(lt::piece_index_t(int(i) + readahead_pieces++), end_piece);
+        for (lt::piece_index_t p{int(i) + 1}; p <= buffer_pieces; p++) {
+          if (t.have_piece(p))
+            continue;
+          t.set_piece_deadline(p, int(i - p) * 5000);
         }
 
         char *buffer_start = piece_data.buffer.get();
@@ -596,12 +590,10 @@ private:
         if (i == end_piece)
           piece_size -= end_offset;
 
-        written +=
+        total_written +=
             net::write(socket_, net::buffer(buffer_start, piece_size), ec);
 
-        if (!ec)
-          remaining_pieces--;
-        else
+        if (ec)
           break;
       }
 
@@ -619,7 +611,7 @@ private:
         res.content = std::move(content);
 
       do_write(std::move(res));
-      return shutdown_();
+      return token_.request_stop();
     }
 
     std::string content = "Forbidden";
@@ -817,15 +809,14 @@ public:
         signals_(ex, SIGINT, SIGTERM) {
     signals_.async_wait([this](boost::system::error_code ec, int) {
       if (!ec)
-        shutdown();
+        token_.request_stop();
+    });
+    token_.add_callback([this]() {
+      signals_.cancel();
+      acceptor_.cancel();
+      handler_->stop();
     });
     accept_loop();
-  }
-
-  void shutdown() {
-    signals_.cancel();
-    acceptor_.cancel();
-    token_.request_stop();
   }
 
 private:
@@ -835,9 +826,7 @@ private:
         net::make_strand(ex_),
         [this](boost::system::error_code ec, tcp::socket socket) {
           if (!ec)
-            std::make_shared<http_session>(std::move(socket), handler_,
-                                           std::bind(&listener::shutdown, this),
-                                           token_)
+            std::make_shared<http_session>(std::move(socket), handler_, token_)
                 ->start();
           else
             fail(ec, "accept");
@@ -910,6 +899,8 @@ int main(int argc, char **argv) {
             << " threads..." << std::endl;
 
   ioc.join();
+
+  std::cout << "Closing program..." << std::endl;
 
   return 0;
 }

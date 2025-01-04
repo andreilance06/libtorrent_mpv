@@ -39,10 +39,9 @@ public:
 
   alert_handler(lt::session &ses, boost::filesystem::path path);
 
-  ~alert_handler();
-
   std::shared_future<piece_entry> schedule_piece(lt::torrent_handle &t,
                                                  lt::piece_index_t const piece);
+  void stop();
 
   void wait_metadata(lt::torrent_handle &t);
 
