@@ -2,7 +2,6 @@
 #include "range_parser.hpp"
 #include <algorithm>
 #include <boost/asio.hpp>
-#include <boost/beast.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
@@ -15,12 +14,10 @@
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
-#include <map>
 #include <regex>
 #include <string>
-#include <thread>
+#include <unordered_map>
 
-namespace beast = boost::beast;
 namespace net = boost::asio;
 using boost::asio::ip::tcp;
 
@@ -246,7 +243,7 @@ static std::string mime_type(std::string path) {
   return "application/octet-stream"; // Default fallback MIME type
 }
 
-void fail(beast::error_code ec, char const *what) {
+void fail(boost::system::error_code ec, char const *what) {
   std::cerr << what << ": " << ec.message() << "\n";
 }
 
@@ -298,8 +295,8 @@ public:
 };
 
 class http_session : public std::enable_shared_from_this<http_session> {
-  beast::tcp_stream stream_;
-  tcp::endpoint ep_ = stream_.socket().remote_endpoint();
+  tcp::socket socket_;
+  tcp::endpoint ep_ = socket_.remote_endpoint();
   std::shared_ptr<handler::alert_handler> handler_;
   std::function<void()> shutdown_;
   stop_token &token_;
@@ -309,10 +306,10 @@ public:
   http_session(tcp::socket &&socket,
                std::shared_ptr<handler::alert_handler> handler,
                std::function<void()> shutdown, stop_token &token)
-      : stream_(std::move(socket)), handler_(handler), shutdown_(shutdown),
+      : socket_(std::move(socket)), handler_(handler), shutdown_(shutdown),
         token_(token) {
     std::cerr << "HTTP session (" << ep_ << ")" << std::endl;
-    id_ = token_.add_callback([this]() { stream_.cancel(); });
+    id_ = token_.add_callback([this]() { socket_.cancel(); });
   }
 
   ~http_session() {
@@ -321,7 +318,7 @@ public:
   }
 
   void start() {
-    net::dispatch(stream_.get_executor(),
+    net::dispatch(socket_.get_executor(),
                   std::bind(&http_session::do_read, this->shared_from_this()));
   }
 
@@ -329,7 +326,7 @@ private:
   void do_read() {
     auto buffer = std::make_shared<net::streambuf>();
     using namespace std::placeholders;
-    net::async_read_until(stream_, *buffer, "\r\n\r\n",
+    net::async_read_until(socket_, *buffer, "\r\n\r\n",
                           std::bind(&http_session::on_read,
                                     this->shared_from_this(), _1, _2, buffer));
   }
@@ -390,7 +387,7 @@ private:
     buf += "\r\n" + res.content;
 
     using namespace std::placeholders;
-    net::async_write(stream_, net::buffer(buf),
+    net::async_write(socket_, net::buffer(buf),
                      std::bind(&http_session::on_write,
                                this->shared_from_this(), _1, _2,
                                res.keep_alive));
@@ -408,7 +405,7 @@ private:
 
   void do_close() {
     boost::system::error_code ec;
-    stream_.socket().shutdown(tcp::socket::shutdown_send, ec);
+    socket_.shutdown(tcp::socket::shutdown_send, ec);
   }
 
   void handle_get(const request &&req) {
@@ -546,7 +543,7 @@ private:
           "\r\n";
 
       boost::system::error_code ec;
-      std::size_t written = net::write(stream_, net::buffer(response), ec);
+      std::size_t written = net::write(socket_, net::buffer(response), ec);
 
       if (req.method == "HEAD" || ec)
         return on_write(ec, written, req.keep_alive);
@@ -600,7 +597,7 @@ private:
           piece_size -= end_offset;
 
         written +=
-            net::write(stream_, net::buffer(buffer_start, piece_size), ec);
+            net::write(socket_, net::buffer(buffer_start, piece_size), ec);
 
         if (!ec)
           remaining_pieces--;
@@ -773,9 +770,8 @@ private:
     std::vector<wrapped_file> files;
     files.reserve(n);
 
-    std::string address =
-        stream_.socket().local_endpoint().address().to_string();
-    std::string port = std::to_string(stream_.socket().local_endpoint().port());
+    std::string address = socket_.local_endpoint().address().to_string();
+    std::string port = std::to_string(socket_.local_endpoint().port());
 
     for (lt::file_index_t i{0}; i < lt::file_index_t(n); i++) {
       wrapped_file f;
@@ -817,7 +813,7 @@ class listener {
 public:
   listener(net::any_io_executor ex, tcp::endpoint endpoint,
            std::shared_ptr<handler::alert_handler> handler)
-      : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
+      : ex_(ex), acceptor_(net::make_strand(ex_), endpoint), handler_(handler),
         signals_(ex, SIGINT, SIGTERM) {
     signals_.async_wait([this](boost::system::error_code ec, int) {
       if (!ec)

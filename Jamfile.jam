@@ -12,6 +12,7 @@ sources =
 libs = 
     /libtorrent//torrent
     ws2_32
+    /boost//asio
     /boost//filesystem
     /boost//json
     /boost//program_options

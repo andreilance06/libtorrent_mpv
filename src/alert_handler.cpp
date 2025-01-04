@@ -1,5 +1,4 @@
 #include <boost/filesystem.hpp>
-#include <condition_variable>
 #include <fstream>
 #include <future>
 #include <libtorrent/alert_types.hpp>
