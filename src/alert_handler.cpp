@@ -26,7 +26,7 @@ alert_handler::alert_handler(lt::session &ses, fs::path path)
       session.wait_for_alert(std::chrono::seconds(1));
     }
 
-    std::cout << "Alert thread exit" << std::endl;
+    std::cout << "Alert handler exiting..." << std::endl;
   });
 }
 
