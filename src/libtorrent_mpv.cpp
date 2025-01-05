@@ -7,16 +7,16 @@
 #include <boost/program_options.hpp>
 #include <boost/url.hpp>
 #include <fstream>
-#include <functional>
 #include <iostream>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/entry.hpp>
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
+#include <map>
 #include <regex>
 #include <string>
-#include <unordered_map>
+#include <thread>
 
 namespace net = boost::asio;
 using boost::asio::ip::tcp;
@@ -250,7 +250,7 @@ void fail(boost::system::error_code ec, char const *what) {
 class stop_token {
   std::atomic<bool> stop_{false};
   mutable std::mutex callback_mtx_;
-  std::unordered_map<std::size_t, std::function<void()>> callbacks_;
+  std::map<std::size_t, std::function<void()>> callbacks_;
   std::size_t next_callback_id_ = 0; // Unique ID for each callback
 
 public:
@@ -294,39 +294,33 @@ public:
   }
 };
 
-class http_session : public std::enable_shared_from_this<http_session> {
+class http_session {
   tcp::socket socket_;
-  tcp::endpoint ep_ = socket_.remote_endpoint();
   std::shared_ptr<handler::alert_handler> handler_;
   stop_token &token_;
-  std::size_t id_;
 
 public:
   http_session(tcp::socket &&socket,
                std::shared_ptr<handler::alert_handler> handler,
                stop_token &token)
       : socket_(std::move(socket)), handler_(handler), token_(token) {
-    std::cerr << "HTTP session (" << ep_ << ")" << std::endl;
-    id_ = token_.add_callback([this]() { socket_.close(); });
+    std::cerr << "HTTP session (" << socket_.remote_endpoint() << ")"
+              << std::endl;
   }
 
   ~http_session() {
-    std::cerr << "HTTP session destroyed (" << ep_ << ")" << std::endl;
-    token_.remove_callback(id_);
+    std::cerr << "HTTP session destroyed (" << socket_.remote_endpoint() << ")"
+              << std::endl;
   }
 
-  void start() {
-    net::dispatch(socket_.get_executor(),
-                  std::bind(&http_session::do_read, this->shared_from_this()));
-  }
+  void start() { do_read(); }
 
 private:
   void do_read() {
     auto buffer = std::make_shared<net::streambuf>();
-    using namespace std::placeholders;
-    net::async_read_until(socket_, *buffer, "\r\n\r\n",
-                          std::bind(&http_session::on_read,
-                                    this->shared_from_this(), _1, _2, buffer));
+    boost::system::error_code ec;
+    std::size_t written = net::read_until(socket_, *buffer, "\r\n\r\n", ec);
+    on_read(ec, written, buffer);
   }
 
   void on_read(boost::system::error_code ec, std::size_t,
@@ -384,11 +378,9 @@ private:
 
     buf += "\r\n" + res.content;
 
-    using namespace std::placeholders;
-    net::async_write(socket_, net::buffer(buf),
-                     std::bind(&http_session::on_write,
-                               this->shared_from_this(), _1, _2,
-                               res.keep_alive));
+    boost::system::error_code ec;
+    std::size_t written = net::write(socket_, net::buffer(buf), ec);
+    on_write(ec, written, res.keep_alive);
   }
 
   void on_write(boost::system::error_code ec, std::size_t, bool keep_alive) {
@@ -796,16 +788,16 @@ private:
 };
 
 class listener {
-  net::any_io_executor ex_;
+  net::io_context::executor_type ex_;
   tcp::acceptor acceptor_;
   std::shared_ptr<handler::alert_handler> handler_;
   net::signal_set signals_;
   stop_token token_;
 
 public:
-  listener(net::any_io_executor ex, tcp::endpoint endpoint,
+  listener(net::io_context::executor_type ex, tcp::endpoint endpoint,
            std::shared_ptr<handler::alert_handler> handler)
-      : ex_(ex), acceptor_(net::make_strand(ex_), endpoint), handler_(handler),
+      : ex_(ex), acceptor_(ex_, endpoint), handler_(handler),
         signals_(ex, SIGINT, SIGTERM) {
     signals_.async_wait([this](boost::system::error_code ec, int) {
       if (!ec)
@@ -816,24 +808,28 @@ public:
       acceptor_.cancel();
       handler_->stop();
     });
-    accept_loop();
+    std::thread(std::bind(&listener::accept_loop, this)).detach();
   }
 
 private:
   void accept_loop() {
-    // The new connection gets its own strand
-    acceptor_.async_accept(
-        net::make_strand(ex_),
-        [this](boost::system::error_code ec, tcp::socket socket) {
-          if (!ec)
-            std::make_shared<http_session>(std::move(socket), handler_, token_)
-                ->start();
-          else
-            fail(ec, "accept");
+    for (;;) {
+      boost::system::error_code ec;
+      tcp::socket socket{ex_};
+      acceptor_.accept(socket, ec);
+      if (!ec)
+        std::thread(std::bind(&http_session::start,
+                              std::make_shared<http_session>(std::move(socket),
+                                                             handler_, token_)))
+            .detach();
+      else
+        fail(ec, "accept");
 
-          if (!token_.stop_requested())
-            accept_loop();
-        });
+      if (token_.stop_requested())
+        return;
+    }
+
+    std::cout << "Accept loop exiting..." << std::endl;
   }
 };
 
@@ -847,11 +843,8 @@ int main(int argc, char **argv) {
       "address", po::value<std::string>()->default_value("0.0.0.0"),
       "HTTP server address")("port", po::value<uint16_t>()->default_value(1337),
                              "HTTP server port")(
-      "threads",
-      po::value<size_t>()->default_value(std::thread::hardware_concurrency()),
-      "HTTP server threads")("save-path",
-                             po::value<fs::path>()->default_value("."),
-                             "Directory where downloaded files are stored");
+      "save-path", po::value<fs::path>()->default_value("."),
+      "Directory where downloaded files are stored");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -860,7 +853,6 @@ int main(int argc, char **argv) {
   auto const address =
       net::ip::make_address(vm.at("address").as<std::string>());
   auto const port = vm.at("port").as<uint16_t>();
-  auto const threads = std::max<size_t>(1, vm.at("threads").as<size_t>());
   auto const save_path = vm.at("save-path").as<fs::path>();
 
   auto const resume_path = save_path / "resume_data";
@@ -870,7 +862,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  net::thread_pool ioc{threads};
+  net::io_context ioc{1};
   lt::session_params params;
   params.settings.set_int(lt::settings_pack::alert_mask,
                           lt::alert_category::status |
@@ -895,10 +887,9 @@ int main(int argc, char **argv) {
 
   listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
 
-  std::cout << "Server running on port " << port << " with " << threads
-            << " threads..." << std::endl;
+  std::cout << "Server running on port " << port << "..." << std::endl;
 
-  ioc.join();
+  ioc.run();
 
   std::cout << "Closing program..." << std::endl;
 
