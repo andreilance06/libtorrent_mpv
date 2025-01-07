@@ -185,7 +185,7 @@ function Menu.create_torrent_menu(menu_id, index)
 
       table.insert(Menu.root_items, {
         title = v.Name,
-        hint = string.format(#v.Files == 1 and "%d file" or "%d files", #v.Files),
+        hint = string.format(#media_files == 1 and "%d file" or "%d files", #media_files),
         items = play_torrent_items
       })
     end
