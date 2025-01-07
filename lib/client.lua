@@ -48,7 +48,7 @@ function Client.close()
     name = "subprocess",
     playback_only = false,
     capture_stderr = true,
-    args = { "curl", "localhost:" .. Config.opts.port .. "/shutdown" }
+    args = { "curl", "127.0.0.1:" .. Config.opts.port .. "/shutdown" }
   })
 
   if cmd.status ~= 0 then
@@ -73,7 +73,7 @@ function Client.add(torrent_url)
     name = "subprocess",
     capture_stdout = true,
     args = { "curl", "-s", "-f", "--retry", "10", "--retry-delay", "1", "--retry-connrefused", "-d",
-      torrent_url, "localhost:" .. Config.opts.port .. "/torrents" }
+      torrent_url, "127.0.0.1:" .. Config.opts.port .. "/torrents" }
   })
 
   local playlist = cmd.stdout
@@ -111,7 +111,7 @@ function Client.remove(info_hash, delete_files)
   local cmd = mp.command_native({
     name = "subprocess",
     playback_only = false,
-    args = { "curl", "-X", "DELETE", "localhost:" .. Config.opts.port .. "/torrents/" .. info_hash .. "?DeleteFiles=" .. tostring(delete_files) },
+    args = { "curl", "-X", "DELETE", "127.0.0.1:" .. Config.opts.port .. "/torrents/" .. info_hash .. "?DeleteFiles=" .. tostring(delete_files) },
   })
 
   return cmd.status ~= 0

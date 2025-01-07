@@ -15,7 +15,7 @@ function State.is_running()
     playback_only = false,
     capture_stdout = true,
     capture_stderr = true,
-    args = { "curl", "-s", "--connect-timeout", "0.25", "localhost:" .. Config.opts.port .. "/torrents" }
+    args = { "curl", "-s", "--connect-timeout", "0.25", "127.0.0.1:" .. Config.opts.port .. "/torrents" }
   })
   return cmd.status == 0
 end
@@ -31,7 +31,7 @@ function State.update()
     playback_only = false,
     capture_stdout = true,
     capture_stderr = true,
-    args = { "curl", "-s", "--connect-timeout", "5", "localhost:" .. Config.opts.port .. "/torrents" }
+    args = { "curl", "-s", "--connect-timeout", "5", "127.0.0.1:" .. Config.opts.port .. "/torrents" }
   })
 
   if cmd.status ~= 0 then
