@@ -1,7 +1,6 @@
 #ifndef ALERT_HANDLER
 #define ALERT_HANDLER
 
-#include <atomic>
 #include <boost/filesystem.hpp>
 #include <condition_variable>
 #include <future>
@@ -20,6 +19,13 @@ struct piece_request {
   lt::info_hash_t info_hash;
   lt::piece_index_t piece;
   std::shared_ptr<std::promise<piece_entry>> promise;
+  std::shared_future<piece_entry> future;
+
+  piece_request(lt::info_hash_t info, lt::piece_index_t p,
+                std::shared_ptr<std::promise<piece_entry>> pr)
+      : info_hash(info), piece(p), promise(std::move(pr)),
+        future(promise ? std::shared_future<piece_entry>(promise->get_future())
+                       : std::shared_future<piece_entry>()) {}
 
   inline bool operator==(piece_request const &rq) const {
     return rq.info_hash == info_hash && rq.piece == piece;
@@ -33,24 +39,27 @@ struct piece_request {
 
 namespace handler {
 class alert_handler {
+
 public:
-  lt::session &session;
+  std::shared_ptr<lt::session> session;
   boost::filesystem::path save_path;
 
-  alert_handler(lt::session &ses, boost::filesystem::path path);
+  alert_handler(lt::session_params params, boost::filesystem::path save_path);
 
   std::shared_future<piece_entry> schedule_piece(lt::torrent_handle &t,
                                                  lt::piece_index_t const piece);
-  void stop();
 
   void wait_metadata(lt::torrent_handle &t);
 
-private:
-  std::mutex mtx_;
-  std::thread alert_thread_;
-  std::atomic_bool stop_;
+  void join();
 
-  typedef std::multiset<piece_request> requests_t;
+  void stop();
+
+private:
+  std::thread alert_thread_;
+
+  typedef std::set<piece_request> requests_t;
+  std::mutex requests_mtx_;
   requests_t requests_;
 
   std::mutex metadata_mtx_;

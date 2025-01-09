@@ -10,6 +10,7 @@
 #include <iostream>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/entry.hpp>
+#include <libtorrent/hex.hpp>
 #include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
@@ -262,9 +263,9 @@ public:
     if (stop_.exchange(true, std::memory_order_relaxed)) {
       return; // Stop already requested
     }
-    for (const auto &[id, cb] : callbacks_) {
-      if (cb) {
-        cb();
+    for (const auto &entry : callbacks_) {
+      if (entry.second) {
+        entry.second();
       }
     }
   }
@@ -298,19 +299,20 @@ class http_session {
   tcp::socket socket_;
   std::shared_ptr<handler::alert_handler> handler_;
   stop_token &token_;
+  std::shared_ptr<lt::session> session_;
+  tcp::endpoint ep_;
 
 public:
   http_session(tcp::socket &&socket,
                std::shared_ptr<handler::alert_handler> handler,
                stop_token &token)
-      : socket_(std::move(socket)), handler_(handler), token_(token) {
-    std::cerr << "HTTP session (" << socket_.remote_endpoint() << ")"
-              << std::endl;
+      : socket_(std::move(socket)), handler_(handler), token_(token),
+        session_(handler_->session), ep_(socket_.remote_endpoint()) {
+    std::cerr << "HTTP session (" << ep_ << ")" << std::endl;
   }
 
   ~http_session() {
-    std::cerr << "HTTP session destroyed (" << socket_.remote_endpoint() << ")"
-              << std::endl;
+    std::cerr << "HTTP session destroyed (" << ep_ << ")" << std::endl;
   }
 
   void start() { do_read(); }
@@ -405,7 +407,7 @@ private:
 
     if (req.target == "/torrents") {
       boost::json::array torrents;
-      for (auto &t : handler_->session.get_torrents()) {
+      for (auto &t : session_->get_torrents()) {
         std::shared_ptr<const lt::torrent_info> info = t.torrent_file();
         if (info == nullptr)
           continue;
@@ -431,7 +433,7 @@ private:
 
       lt::sha1_hash sha1;
       lt::aux::from_hex(info_hash, sha1.data());
-      lt::torrent_handle t = handler_->session.find_torrent(sha1);
+      lt::torrent_handle t = session_->find_torrent(sha1);
 
       if (!t.is_valid()) {
         std::string content = "Torrent not found";
@@ -467,7 +469,7 @@ private:
 
       lt::sha1_hash sha1;
       lt::aux::from_hex(info_hash, sha1.data());
-      lt::torrent_handle t = handler_->session.find_torrent(sha1);
+      lt::torrent_handle t = session_->find_torrent(sha1);
 
       if (!t.is_valid()) {
         std::string content = "Torrent not found";
@@ -559,34 +561,36 @@ private:
       for (lt::piece_index_t i = start_piece; i <= end_piece; i++) {
         auto p = handler_->schedule_piece(t, i);
 
-        piece_entry piece_data = p.get();
-        if (piece_data.size < 0)
-          break;
-
         auto buffer_pieces =
             std::min(lt::piece_index_t(int(i) + readahead_pieces++), end_piece);
-        for (lt::piece_index_t p{int(i) + 1}; p <= buffer_pieces; p++) {
-          if (t.have_piece(p))
+        for (lt::piece_index_t future_piece{int(i) + 1};
+             future_piece <= buffer_pieces; future_piece++) {
+          if (t.have_piece(future_piece))
             continue;
-          t.set_piece_deadline(p, int(i - p) * 5000);
+          t.set_piece_deadline(future_piece, int(future_piece - i) * 5000);
         }
 
-        char *buffer_start = piece_data.buffer.get();
-        int piece_size = piece_data.size;
+        try {
+          piece_entry piece_data = p.get();
+          char *buffer_start = piece_data.buffer.get();
+          int piece_size = piece_data.size;
 
-        if (i == start_piece) {
-          buffer_start += start_offset;
-          piece_size -= start_offset;
-        }
+          if (i == start_piece) {
+            buffer_start += start_offset;
+            piece_size -= start_offset;
+          }
 
-        if (i == end_piece)
-          piece_size -= end_offset;
+          if (i == end_piece)
+            piece_size -= end_offset;
 
-        total_written +=
-            net::write(socket_, net::buffer(buffer_start, piece_size), ec);
+          total_written +=
+              net::write(socket_, net::buffer(buffer_start, piece_size), ec);
 
-        if (ec)
+          if (ec)
+            break;
+        } catch (const std::future_error &e) {
           break;
+        }
       }
 
       return on_write(ec, total_written, req.keep_alive);
@@ -637,12 +641,11 @@ private:
 
     lt::add_torrent_params params = get_torrent_params(body);
     params.save_path = handler_->save_path.string();
-    lt::torrent_handle t =
-        handler_->session.find_torrent(params.info_hashes.v1);
+    lt::torrent_handle t = session_->find_torrent(params.info_hashes.v1);
 
     if (!t.is_valid()) {
       lt::error_code ec;
-      t = handler_->session.add_torrent(params, ec);
+      t = session_->add_torrent(params, ec);
       if (ec) {
         std::string content = "Failed to add torrent " + ec.message();
         res.status = 400;
@@ -676,7 +679,7 @@ private:
 
       lt::sha1_hash sha1;
       lt::aux::from_hex(info_hash, sha1.data());
-      lt::torrent_handle t = handler_->session.find_torrent(sha1);
+      lt::torrent_handle t = session_->find_torrent(sha1);
 
       if (!t.is_valid()) {
         std::string content = "Torrent not found";
@@ -689,10 +692,9 @@ private:
       }
 
       if (req.target.find("?DeleteFiles=true") == std::string::npos)
-        handler_->session.remove_torrent(t);
+        session_->remove_torrent(t);
       else
-        handler_->session.remove_torrent(
-            t, lt::remove_flags_t{(unsigned char)(1U)});
+        session_->remove_torrent(t, lt::remove_flags_t{(unsigned char)(1U)});
 
       std::string content = "Torrent successfully deleted";
       res.status = 200;
@@ -808,7 +810,7 @@ public:
       acceptor_.cancel();
       handler_->stop();
     });
-    std::thread(std::bind(&listener::accept_loop, this)).detach();
+    std::thread([this]() { accept_loop(); }).detach();
   }
 
 private:
@@ -818,10 +820,9 @@ private:
       tcp::socket socket{ex_};
       acceptor_.accept(socket, ec);
       if (!ec)
-        std::thread(std::bind(&http_session::start,
-                              std::make_shared<http_session>(std::move(socket),
-                                                             handler_, token_)))
-            .detach();
+        std::thread([this, s = std::move(socket)]() mutable {
+          http_session(std::move(s), handler_, token_).start();
+        }).detach();
       else
         fail(ec, "accept");
 
@@ -873,8 +874,7 @@ int main(int argc, char **argv) {
   params.settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
   params.settings.set_bool(lt::settings_pack::close_redundant_connections,
                            false);
-  lt::session ses(params);
-  auto handler = std::make_shared<handler::alert_handler>(ses, save_path);
+  auto handler = std::make_shared<handler::alert_handler>(params, save_path);
 
   if (!fs::exists(resume_path))
     fs::create_directory(resume_path);
@@ -882,7 +882,8 @@ int main(int argc, char **argv) {
   for (auto &entry : fs::directory_iterator(resume_path)) {
     if (entry.path().extension() != ".fastresume")
       continue;
-    ses.async_add_torrent(get_torrent_params(entry.path().string()));
+    handler->session->async_add_torrent(
+        get_torrent_params(entry.path().string()));
   }
 
   listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
@@ -890,6 +891,7 @@ int main(int argc, char **argv) {
   std::cout << "Server running on port " << port << "..." << std::endl;
 
   ioc.run();
+  handler->join();
 
   std::cout << "Closing program..." << std::endl;
 

@@ -15,15 +15,21 @@
 using namespace handler;
 namespace fs = boost::filesystem;
 
-alert_handler::alert_handler(lt::session &ses, fs::path path)
-    : session(ses), save_path(path), stop_(false) {
+alert_handler::alert_handler(lt::session_params params,
+                             boost::filesystem::path save_path)
+    : session(std::make_shared<lt::session>(params)), save_path(save_path) {
+
   alert_thread_ = std::thread([this] {
-    while (!stop_) {
+    auto temp_ptr = session;
+    for (;;) {
+      if (temp_ptr.use_count() == 1)
+        break;
+
       std::vector<lt::alert *> alerts;
-      session.pop_alerts(&alerts);
+      temp_ptr->pop_alerts(&alerts);
       for (auto a : alerts)
         handle_alert(a);
-      session.wait_for_alert(std::chrono::seconds(1));
+      temp_ptr->wait_for_alert(std::chrono::seconds(1));
     }
 
     std::cout << "Alert handler exiting..." << std::endl;
@@ -64,31 +70,23 @@ void alert_handler::handle_alert(lt::alert *a) {
 }
 
 void alert_handler::handle_read_piece_alert(lt::read_piece_alert *a) {
-  lt::torrent_handle t = a->handle;
-  using iter = requests_t::iterator;
 
-  std::lock_guard<std::mutex> l(mtx_);
-  std::pair<iter, iter> range =
-      requests_.equal_range(piece_request{t.info_hashes(), a->piece});
+  std::lock_guard<std::mutex> l(requests_mtx_);
+  auto request =
+      requests_.find(piece_request{a->handle.info_hashes(), a->piece, nullptr});
 
-  if (range.first == range.second)
+  if (request == requests_.end())
     return;
 
-  for (iter i = range.first; i != range.second; i++)
-    i->promise->set_value(piece_entry{a->piece, a->buffer, a->size});
-
-  requests_.erase(range.first, range.second);
+  request->promise->set_value(piece_entry{a->piece, a->buffer, a->size});
+  requests_.erase(request);
 }
 
 void alert_handler::handle_piece_finished_alert(lt::piece_finished_alert *a) {
   lt::torrent_handle t = a->handle;
 
-  using iter = requests_t::iterator;
-
-  std::lock_guard<std::mutex> l(mtx_);
-  std::pair<iter, iter> range =
-      requests_.equal_range(piece_request{t.info_hashes(), a->piece_index});
-  if (range.first == range.second)
+  std::lock_guard<std::mutex> l(requests_mtx_);
+  if (!requests_.count(piece_request{t.info_hashes(), a->piece_index, nullptr}))
     return;
 
   t.read_piece(a->piece_index);
@@ -134,17 +132,17 @@ void alert_handler::handle_metadata_received_alert(
 }
 
 void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
-  piece_request rq{a->info_hashes};
 
-  rq.piece = lt::piece_index_t{0};
   typedef requests_t::iterator iter;
 
-  std::lock_guard<std::mutex> l(mtx_);
-  iter first = requests_.lower_bound(rq);
-  rq.piece = lt::piece_index_t{INT_MAX};
-  iter last = requests_.upper_bound(rq);
-  for (iter i = first; i != last; i++)
-    i->promise->set_value(piece_entry{lt::piece_index_t{-1}, {}, -1});
+  std::lock_guard<std::mutex> l(requests_mtx_);
+
+  piece_request search_key{a->info_hashes, lt::piece_index_t{0}, nullptr};
+  iter first = requests_.lower_bound(search_key);
+
+  search_key.piece = lt::piece_index_t{INT_MAX};
+  iter last = requests_.upper_bound(search_key);
+
   requests_.erase(first, last);
 }
 
@@ -174,14 +172,26 @@ void alert_handler::handle_torrent_deleted_alert(lt::torrent_deleted_alert *a) {
 std::shared_future<piece_entry>
 alert_handler::schedule_piece(lt::torrent_handle &t,
                               lt::piece_index_t const piece) {
-  std::lock_guard<std::mutex> l(mtx_);
-  auto iter = requests_.insert(piece_request{
-      t.info_hashes(), piece, std::make_shared<std::promise<piece_entry>>()});
 
-  if (t.have_piece(piece))
+  std::lock_guard<std::mutex> l(requests_mtx_);
+
+  auto existing_entry =
+      requests_.find(piece_request{t.info_hashes(), piece, nullptr});
+
+  if (existing_entry != requests_.end())
+    return existing_entry->future;
+
+  auto entry = requests_.emplace(t.info_hashes(), piece,
+                                 std::make_shared<std::promise<piece_entry>>());
+
+  std::shared_future<piece_entry> future{entry.first->future};
+
+  if (session == nullptr)
+    requests_.erase(entry.first);
+  else if (t.have_piece(piece))
     t.read_piece(piece);
 
-  return std::shared_future<piece_entry>(iter->promise->get_future());
+  return future;
 }
 
 void alert_handler::wait_metadata(lt::torrent_handle &t) {
@@ -191,11 +201,10 @@ void alert_handler::wait_metadata(lt::torrent_handle &t) {
   }
 }
 
+void alert_handler::join() { alert_thread_.join(); }
+
 void alert_handler::stop() {
-  stop_ = true;
-  alert_thread_.join();
-  std::lock_guard<std::mutex> l(mtx_);
-  for (auto &r : requests_)
-    r.promise->set_value(piece_entry{lt::piece_index_t{-1}, {}, -1});
+  session.reset();
+  std::lock_guard<std::mutex> l(requests_mtx_);
   requests_.clear();
 }
