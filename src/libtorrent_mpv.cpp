@@ -644,7 +644,7 @@ private:
     }
 
     lt::add_torrent_params params = get_torrent_params(body);
-    params.save_path = handler_->save_path.string();
+    params.save_path = handler_->save_path.make_preferred().string();
     lt::torrent_handle t = session_->find_torrent(params.info_hashes.v1);
 
     if (!t.is_valid()) {
