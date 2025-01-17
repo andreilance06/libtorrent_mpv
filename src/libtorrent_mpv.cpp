@@ -308,6 +308,8 @@ public:
                stop_token &token)
       : socket_(std::move(socket)), handler_(handler), token_(token),
         session_(handler_->session), ep_(socket_.remote_endpoint()) {
+    socket_.set_option(net::socket_base::keep_alive(true));
+    socket_.set_option(tcp::no_delay(true));
     std::cerr << "HTTP session (" << ep_ << ")" << std::endl;
   }
 
@@ -576,6 +578,8 @@ private:
           int piece_size = piece_data.size;
 
           if (i == start_piece) {
+            socket_.set_option(
+                net::socket_base::send_buffer_size(piece_data.size));
             buffer_start += start_offset;
             piece_size -= start_offset;
           }
@@ -869,11 +873,20 @@ int main(int argc, char **argv) {
                           lt::alert_category::status |
                               lt::alert_category::storage |
                               lt::alert_category::piece_progress);
-  params.settings.set_int(lt::settings_pack::connection_speed, 200);
+  params.settings.set_int(lt::settings_pack::connection_speed, 500);
+  params.settings.set_int(lt::settings_pack::connections_limit, 800);
+  params.settings.set_int(lt::settings_pack::listen_queue_size, 50);
+  params.settings.set_int(lt::settings_pack::max_queued_disk_bytes,
+                          7 * 1024 * 1024);
+  params.settings.set_int(lt::settings_pack::max_rejects, 10);
+  params.settings.set_int(lt::settings_pack::mixed_mode_algorithm,
+                          lt::settings_pack::prefer_tcp);
+  params.settings.set_int(lt::settings_pack::request_timeout, 10);
   params.settings.set_int(lt::settings_pack::smooth_connects, false);
   params.settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
   params.settings.set_bool(lt::settings_pack::close_redundant_connections,
                            false);
+  params.settings.set_bool(lt::settings_pack::no_atime_storage, true);
   auto handler = std::make_shared<handler::alert_handler>(params, save_path);
 
   if (!fs::exists(resume_path))
