@@ -22,7 +22,7 @@ alert_handler::alert_handler(lt::session_params params,
   alert_thread_ = std::thread([this] {
     auto temp_ptr = session;
     for (;;) {
-      if (temp_ptr.use_count() == 1)
+      if (temp_ptr.use_count() == 1 && outstanding_saves_ == 0)
         break;
 
       std::vector<lt::alert *> alerts;
@@ -63,9 +63,6 @@ void alert_handler::handle_alert(lt::alert *a) {
     handle_torrent_finished_alert(
         lt::alert_cast<lt::torrent_finished_alert>(a));
     break;
-  case lt::torrent_deleted_alert::alert_type:
-    handle_torrent_deleted_alert(lt::alert_cast<lt::torrent_deleted_alert>(a));
-    break;
   }
 }
 
@@ -97,6 +94,7 @@ void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
     return;
 
   lt::torrent_handle t = a->handle;
+  time_added_.emplace(t.info_hashes(), std::chrono::steady_clock::now());
   if (t.torrent_file() == nullptr)
     return;
 
@@ -135,6 +133,7 @@ void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
 
   typedef requests_t::iterator iter;
 
+  time_added_.erase(a->info_hashes);
   std::lock_guard<std::mutex> l(requests_mtx_);
 
   piece_request search_key{a->info_hashes, lt::piece_index_t{0}, nullptr};
@@ -144,6 +143,11 @@ void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
   iter last = requests_.upper_bound(search_key);
 
   requests_.erase(first, last);
+
+  boost::system::error_code ec;
+  fs::remove(save_path / "resume_data" /
+                 (lt::aux::to_hex(a->info_hashes.v1) + ".fastresume"),
+             ec);
 }
 
 void alert_handler::handle_save_resume_data_alert(
@@ -155,18 +159,21 @@ void alert_handler::handle_save_resume_data_alert(
   std::vector<char> buf = lt::write_resume_data_buf(a->params);
   out.write(buf.data(), buf.size());
   out.close();
+
+  if (outstanding_saves_)
+    outstanding_saves_--;
 }
 
 void alert_handler::handle_torrent_finished_alert(
     lt::torrent_finished_alert *a) {
-  a->handle.save_resume_data();
-}
+  lt::torrent_handle t = a->handle;
 
-void alert_handler::handle_torrent_deleted_alert(lt::torrent_deleted_alert *a) {
-  boost::system::error_code ec;
-  fs::remove(save_path / "resume_data" /
-                 (lt::aux::to_hex(a->info_hashes.v1) + ".fastresume"),
-             ec);
+  using namespace std::chrono;
+  bool is_new = 10s > (steady_clock::now() - time_added_[t.info_hashes()]);
+  if (is_new)
+    return;
+
+  t.save_resume_data();
 }
 
 std::shared_future<piece_entry>
@@ -204,7 +211,14 @@ void alert_handler::wait_metadata(lt::torrent_handle &t) {
 void alert_handler::join() { alert_thread_.join(); }
 
 void alert_handler::stop() {
-  session.reset();
   std::lock_guard<std::mutex> l(requests_mtx_);
+  for (auto &t : session->get_torrents()) {
+    if (t.torrent_file() == nullptr)
+      continue;
+
+    outstanding_saves_++;
+    t.save_resume_data();
+  }
+  session.reset();
   requests_.clear();
 }

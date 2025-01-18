@@ -65,6 +65,9 @@ private:
   std::mutex metadata_mtx_;
   std::condition_variable metadata_cv_;
 
+  std::unordered_map<lt::info_hash_t, std::chrono::steady_clock::time_point> time_added_;
+  std::atomic_uint outstanding_saves_{0};
+
   void handle_alert(lt::alert *a);
 
   void handle_read_piece_alert(lt::read_piece_alert *a);
@@ -80,8 +83,6 @@ private:
   void handle_save_resume_data_alert(lt::save_resume_data_alert *a);
 
   void handle_torrent_finished_alert(lt::torrent_finished_alert *a);
-
-  void handle_torrent_deleted_alert(lt::torrent_deleted_alert *a);
 };
 } // namespace handler
 
