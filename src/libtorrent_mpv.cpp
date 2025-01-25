@@ -96,6 +96,19 @@ static lt::add_torrent_params get_torrent_params(std::string id) {
   lt::add_torrent_params params;
   lt::error_code ec;
 
+  auto const ext = [&id] {
+    auto const pos = id.rfind(".");
+    if (pos == std::string::npos)
+      return std::string{};
+    return id.substr(pos);
+  }();
+
+  if (ext == ".fastresume") {
+    std::ifstream in(id, std::ios_base::binary);
+    std::vector<char> buf(std::istreambuf_iterator<char>(in), {});
+    return lt::read_resume_data(buf);
+  }
+
   params.ti = std::make_shared<lt::torrent_info>(id, ec);
   if (!ec)
     return params;
@@ -109,19 +122,6 @@ static lt::add_torrent_params get_torrent_params(std::string id) {
     lt::aux::from_hex(id, sha1.data());
     params.info_hashes.v1 = sha1;
     return params;
-  }
-
-  auto const ext = [&id] {
-    auto const pos = id.rfind(".");
-    if (pos == std::string::npos)
-      return std::string{};
-    return id.substr(pos);
-  }();
-
-  if (ext == ".fastresume") {
-    std::ifstream in(id, std::ios_base::binary);
-    std::vector<char> buf(std::istreambuf_iterator<char>(in), {});
-    return lt::read_resume_data(buf);
   }
 
   return lt::add_torrent_params{};
