@@ -59,6 +59,10 @@ void alert_handler::handle_alert(lt::alert *a) {
     handle_save_resume_data_alert(
         lt::alert_cast<lt::save_resume_data_alert>(a));
     break;
+  case lt::save_resume_data_failed_alert::alert_type:
+    handle_save_resume_data_failed_alert(
+        lt::alert_cast<lt::save_resume_data_failed_alert>(a));
+    break;
   case lt::torrent_finished_alert::alert_type:
     handle_torrent_finished_alert(
         lt::alert_cast<lt::torrent_finished_alert>(a));
@@ -98,6 +102,12 @@ void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
   if (t.torrent_file() == nullptr)
     return;
 
+  auto resume_file = save_path / "resume_data" /
+                     (lt::aux::to_hex(t.info_hashes().v1) + ".fastresume");
+
+  if (fs::exists(resume_file) && fs::is_regular_file(resume_file))
+    return;
+
   lt::piece_index_t piece_count{t.torrent_file()->num_pieces()};
   std::vector<std::pair<lt::piece_index_t, lt::download_priority_t>> priorities;
   for (lt::piece_index_t i{0}; i < piece_count; i++)
@@ -105,13 +115,7 @@ void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
         i, lt::dont_download));
   t.prioritize_pieces(priorities);
 
-  auto resume_file = save_path / "resume_data" /
-                     (lt::aux::to_hex(t.info_hashes().v1) + ".fastresume");
-
-  if (fs::exists(resume_file) && fs::is_regular_file(resume_file))
-    return;
-
-  t.save_resume_data();
+  t.save_resume_data(t.only_if_modified | t.save_info_dict);
 }
 
 void alert_handler::handle_metadata_received_alert(
@@ -164,6 +168,12 @@ void alert_handler::handle_save_resume_data_alert(
     outstanding_saves_--;
 }
 
+void alert_handler::handle_save_resume_data_failed_alert(
+    lt::save_resume_data_failed_alert *a) {
+  if (outstanding_saves_)
+    outstanding_saves_--;
+}
+
 void alert_handler::handle_torrent_finished_alert(
     lt::torrent_finished_alert *a) {
   lt::torrent_handle t = a->handle;
@@ -173,7 +183,7 @@ void alert_handler::handle_torrent_finished_alert(
   if (is_new)
     return;
 
-  t.save_resume_data();
+  t.save_resume_data(t.only_if_modified | t.save_info_dict);
 }
 
 std::shared_future<piece_entry>
@@ -217,7 +227,7 @@ void alert_handler::stop() {
       continue;
 
     outstanding_saves_++;
-    t.save_resume_data();
+    t.save_resume_data(t.only_if_modified | t.save_info_dict);
   }
   session.reset();
   requests_.clear();
