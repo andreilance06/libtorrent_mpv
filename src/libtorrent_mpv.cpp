@@ -895,8 +895,9 @@ int main(int argc, char **argv) {
   for (auto &entry : fs::directory_iterator(resume_path)) {
     if (entry.path().extension() != ".fastresume")
       continue;
-    handler->session->async_add_torrent(
-        get_torrent_params(entry.path().string()));
+    auto params = get_torrent_params(entry.path().string());
+    params.save_path = handler->save_path.make_preferred().string();
+    handler->session->async_add_torrent(params);
   }
 
   listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
