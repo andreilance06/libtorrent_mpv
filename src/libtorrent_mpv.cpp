@@ -466,8 +466,7 @@ private:
       decoded << boost::urls::decode_view(req.target);
 
       std::string info_hash = req.target.substr(10, 40);
-      std::string path = decoded.str().substr(51);
-      std::replace(path.begin(), path.end(), '/', '\\');
+      boost::filesystem::path path = decoded.str().substr(51);
 
       lt::sha1_hash sha1;
       lt::aux::from_hex(info_hash, sha1.data());
@@ -490,7 +489,7 @@ private:
       lt::file_index_t file_index{-1};
       lt::file_index_t file_count{info->num_files()};
       for (lt::file_index_t i{0}; i < file_count; i++) {
-        if (info->files().file_path(i) == path) {
+        if (info->files().file_path(i) == path.make_preferred()) {
           file_index = i;
           break;
         }
@@ -526,7 +525,7 @@ private:
           std::string(req.keep_alive ? "keep-alive" : "close") +
           "\r\n"
           "Content-Type: " +
-          mime_type(path) +
+          mime_type(path.string()) +
           "\r\n"
           "Content-Length: " +
           std::to_string(range.length) + "\r\n" +
