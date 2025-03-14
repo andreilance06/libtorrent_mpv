@@ -549,9 +549,7 @@ private:
 
       int start_offset = mappings.start;
       int end_offset =
-          end_piece_size -
-          ((range.start + range.length) -
-           (int64_t(int(end_piece)) * info->files().piece_length()));
+          end_mappings.start > 0 ? end_piece_size - end_mappings.start : 0;
 
       t.set_piece_deadline(start_piece, 5000);
 
