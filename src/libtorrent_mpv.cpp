@@ -515,23 +515,21 @@ private:
 
       range_parser::Range range = parsed.ranges.at(0);
 
-      const std::string response =
-          "HTTP/1.1 " + std::string(range.length < size ? "206" : "200") +
-          "\r\n"
-          "Accept-Ranges: bytes\r\n"
-          "Connection: " +
-          std::string(req.keep_alive ? "keep-alive" : "close") +
-          "\r\n"
-          "Content-Type: " +
-          mime_type(path.string()) +
-          "\r\n"
-          "Content-Length: " +
-          std::to_string(range.length) + "\r\n" +
-          std::string(range.length < size
-                          ? "Content-Range: " + range.content_range(size) +
-                                "\r\n"
-                          : "") +
-          "\r\n";
+      std::string response;
+      response.reserve(256);
+      response += "HTTP/1.1 ";
+      response += (range.length < size ? "206" : "200");
+      response += "\r\nAccept-Ranges: bytes\r\nConnection: ";
+      response += (req.keep_alive ? "keep-alive" : "close");
+      response += "\r\nContent-Type: ";
+      response += mime_type(path.string());
+      response += "\r\nContent-Length: ";
+      response += std::to_string(range.length);
+      if (range.length < size) {
+        response += "\r\nContent-Range: ";
+        response += range.content_range(size);
+      }
+      response += "\r\n\r\n";
 
       boost::system::error_code ec;
       std::size_t written = net::write(socket_, net::buffer(response), ec);
