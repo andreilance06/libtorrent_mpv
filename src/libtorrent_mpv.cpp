@@ -310,12 +310,10 @@ public:
         session_(handler_->session), ep_(socket_.remote_endpoint()) {
     socket_.set_option(net::socket_base::keep_alive(true));
     socket_.set_option(tcp::no_delay(true));
-    std::cerr << "HTTP session (" << ep_ << ")" << std::endl;
+    std::cerr << "HTTP session (" << ep_ << ")\n";
   }
 
-  ~http_session() {
-    std::cerr << "HTTP session destroyed (" << ep_ << ")" << std::endl;
-  }
+  ~http_session() { std::cerr << "HTTP session destroyed (" << ep_ << ")\n"; }
 
   void start() { do_read(); }
 
@@ -833,7 +831,7 @@ private:
         return;
     }
 
-    std::cout << "Accept loop exiting..." << std::endl;
+    std::cout << "Accept loop exiting...\n";
   }
 };
 
@@ -862,7 +860,7 @@ int main(int argc, char **argv) {
   auto const resume_path = save_path / "resume_data";
 
   if (!(fs::exists(save_path) && fs::is_directory(save_path))) {
-    std::cerr << "Invalid save path '" << save_path << "'" << std::endl;
+    std::cerr << "Invalid save path '" << save_path << "'\n";
     return 1;
   }
 
@@ -901,12 +899,12 @@ int main(int argc, char **argv) {
 
   listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
 
-  std::cout << "Server running on port " << port << "..." << std::endl;
+  std::cout << "Server running on port " << port << "...\n";
 
   ioc.run();
   handler->join();
 
-  std::cout << "Closing program..." << std::endl;
+  std::cout << "Closing program...\n";
 
   return 0;
 }

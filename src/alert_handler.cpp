@@ -32,7 +32,7 @@ alert_handler::alert_handler(lt::session_params params,
       temp_ptr->wait_for_alert(std::chrono::seconds(1));
     }
 
-    std::cout << "Alert handler exiting..." << std::endl;
+    std::cout << "Alert handler exiting...\n";
   });
 }
 
