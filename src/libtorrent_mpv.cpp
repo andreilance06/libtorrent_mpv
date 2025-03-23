@@ -23,6 +23,22 @@
 namespace net = boost::asio;
 using boost::asio::ip::tcp;
 
+std::string getLocalIp() {
+  char host[256];
+  if (gethostname(host, sizeof(host)) != 0)
+    return "";
+
+  struct hostent *he = gethostbyname(host);
+  if (he == nullptr)
+    return "";
+
+  struct in_addr **addr_list = (struct in_addr **)he->h_addr_list;
+  if (addr_list[0] != nullptr)
+    return inet_ntoa(*addr_list[0]); // Return the first IP address found
+
+  return "";
+}
+
 struct request {
   std::string method;
   std::string target;
@@ -735,7 +751,7 @@ private:
     std::vector<wrapped_file> files;
     files.reserve(n);
 
-    std::string address = socket_.local_endpoint().address().to_string();
+    std::string address = getLocalIp();
     std::string port = std::to_string(socket_.local_endpoint().port());
 
     for (lt::file_index_t i{0}; i < lt::file_index_t(n); i++) {
