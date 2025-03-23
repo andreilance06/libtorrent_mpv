@@ -22,7 +22,7 @@ alert_handler::alert_handler(lt::session_params params,
   alert_thread_ = std::thread([this] {
     auto temp_ptr = session;
     for (;;) {
-      if (temp_ptr.use_count() == 1 && outstanding_saves_ == 0)
+      if (temp_ptr.unique() && outstanding_saves_ == 0)
         break;
 
       std::vector<lt::alert *> alerts;
