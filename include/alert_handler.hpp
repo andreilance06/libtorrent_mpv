@@ -49,7 +49,7 @@ public:
   std::shared_future<piece_entry> schedule_piece(lt::torrent_handle &t,
                                                  lt::piece_index_t const piece);
 
-  void wait_metadata(lt::torrent_handle &t);
+  bool wait_metadata(lt::torrent_handle &t);
 
   void join();
 

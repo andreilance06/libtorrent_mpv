@@ -444,7 +444,16 @@ private:
         return do_write(std::move(res));
       }
 
-      handler_->wait_metadata(t);
+      if (!handler_->wait_metadata(t)) {
+        std::string content = "Torrent not found";
+        res.status = 404;
+        res.headers["Content-Type"] = "text/plain";
+        res.headers["Content-Length"] = std::to_string(content.length());
+        if (req.method == "GET")
+          res.content = std::move(content);
+
+        return do_write(std::move(res));
+      }
 
       std::string content = build_playlist(wrap_files(t.torrent_file()));
       res.status = 200;
@@ -479,7 +488,16 @@ private:
         return do_write(std::move(res));
       }
 
-      handler_->wait_metadata(t);
+      if (!handler_->wait_metadata(t)) {
+        std::string content = "Torrent not found";
+        res.status = 404;
+        res.headers["Content-Type"] = "text/plain";
+        res.headers["Content-Length"] = std::to_string(content.length());
+        if (req.method == "GET")
+          res.content = std::move(content);
+
+        return do_write(std::move(res));
+      }
 
       auto info = t.torrent_file();
       lt::file_index_t file_index{-1};
@@ -652,7 +670,16 @@ private:
       }
     }
 
-    handler_->wait_metadata(t);
+    if (!handler_->wait_metadata(t)) {
+      std::string content = "Torrent not found";
+      res.status = 404;
+      res.headers["Content-Type"] = "text/plain";
+      res.headers["Content-Length"] = std::to_string(content.length());
+      if (req.method == "GET")
+        res.content = std::move(content);
+
+      return do_write(std::move(res));
+    }
 
     std::string content = build_playlist(wrap_files(t.torrent_file()));
     res.status = 200;

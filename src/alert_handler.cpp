@@ -204,17 +204,26 @@ alert_handler::schedule_piece(lt::torrent_handle &t,
   return future;
 }
 
-void alert_handler::wait_metadata(lt::torrent_handle &t) {
+bool alert_handler::wait_metadata(lt::torrent_handle &t) {
+  if (session == nullptr)
+    return false;
+
   if (t.torrent_file() == nullptr) {
     std::unique_lock<std::mutex> l(torrent_mtx_);
-    torrent_cv_.wait(l, [&t]() { return t.torrent_file() != nullptr; });
+    torrent_cv_.wait(l, [this, &t]() {
+      return t.torrent_file() != nullptr || session == nullptr;
+    });
+    return session != nullptr;
   }
+
+  return true;
 }
 
 void alert_handler::join() { alert_thread_.join(); }
 
 void alert_handler::stop() {
-  std::lock_guard<std::mutex> l(requests_mtx_);
+  std::lock_guard<std::mutex> l1(requests_mtx_);
+  std::lock_guard<std::mutex> l2(torrent_mtx_);
   for (auto &t : session->get_torrents()) {
     if (t.torrent_file() == nullptr)
       continue;
@@ -223,5 +232,6 @@ void alert_handler::stop() {
     t.save_resume_data(t.only_if_modified | t.save_info_dict);
   }
   session.reset();
+  torrent_cv_.notify_all();
   requests_.clear();
 }
