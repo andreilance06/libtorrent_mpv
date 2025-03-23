@@ -1,6 +1,7 @@
 #include "alert_handler.hpp"
 #include "range_parser.hpp"
 #include <algorithm>
+#include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/json.hpp>
@@ -21,25 +22,6 @@
 
 namespace net = boost::asio;
 using boost::asio::ip::tcp;
-
-const char *ws = " \t\n\r\f\v";
-
-// trim from end of string (right)
-inline std::string &rtrim(std::string &s, const char *t = ws) {
-  s.erase(s.find_last_not_of(t) + 1);
-  return s;
-}
-
-// trim from beginning of string (left)
-inline std::string &ltrim(std::string &s, const char *t = ws) {
-  s.erase(0, s.find_first_not_of(t));
-  return s;
-}
-
-// trim from both ends of string (right then left)
-inline std::string &trim(std::string &s, const char *t = ws) {
-  return ltrim(rtrim(s, t), t);
-}
 
 struct request {
   std::string method;
@@ -351,8 +333,8 @@ private:
         std::string key = header_line.substr(0, delimiter_pos);
         std::string value = header_line.substr(delimiter_pos + 1);
         // Trim whitespace
-        trim(key);
-        trim(value);
+        boost::trim(key);
+        boost::trim(value);
         req.headers[key] = value;
       }
     }
