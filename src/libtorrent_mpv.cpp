@@ -822,7 +822,7 @@ private:
         fail(ec, "accept");
 
       if (token_.stop_requested())
-        return;
+        break;
     }
 
     std::cout << "Accept loop exiting...\n";
