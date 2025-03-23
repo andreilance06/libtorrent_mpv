@@ -65,7 +65,6 @@ private:
   std::mutex torrent_mtx_;
   std::condition_variable torrent_cv_;
 
-  std::unordered_map<lt::info_hash_t, std::chrono::steady_clock::time_point> time_added_;
   std::atomic_uint outstanding_saves_{0};
 
   void handle_alert(lt::alert *a);
@@ -82,7 +81,8 @@ private:
 
   void handle_save_resume_data_alert(lt::save_resume_data_alert *a);
 
-  void handle_save_resume_data_failed_alert(lt::save_resume_data_failed_alert *a);
+  void
+  handle_save_resume_data_failed_alert(lt::save_resume_data_failed_alert *a);
 
   void handle_torrent_finished_alert(lt::torrent_finished_alert *a);
 };

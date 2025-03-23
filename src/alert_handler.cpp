@@ -98,7 +98,6 @@ void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
     return;
 
   lt::torrent_handle t = a->handle;
-  time_added_.emplace(t.info_hashes(), std::chrono::steady_clock::now());
   if (t.torrent_file() == nullptr)
     return;
 
@@ -137,7 +136,6 @@ void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
 
   typedef requests_t::iterator iter;
 
-  time_added_.erase(a->info_hashes);
   std::lock_guard<std::mutex> l(requests_mtx_);
 
   piece_request search_key{a->info_hashes, lt::piece_index_t{0}, nullptr};
@@ -177,11 +175,6 @@ void alert_handler::handle_save_resume_data_failed_alert(
 void alert_handler::handle_torrent_finished_alert(
     lt::torrent_finished_alert *a) {
   lt::torrent_handle t = a->handle;
-
-  using namespace std::chrono;
-  bool is_new = 10s > (steady_clock::now() - time_added_[t.info_hashes()]);
-  if (is_new)
-    return;
 
   t.save_resume_data(t.only_if_modified | t.save_info_dict);
 }
