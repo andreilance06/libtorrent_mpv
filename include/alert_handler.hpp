@@ -62,8 +62,8 @@ private:
   std::mutex requests_mtx_;
   requests_t requests_;
 
-  std::mutex metadata_mtx_;
-  std::condition_variable metadata_cv_;
+  std::mutex torrent_mtx_;
+  std::condition_variable torrent_cv_;
 
   std::unordered_map<lt::info_hash_t, std::chrono::steady_clock::time_point> time_added_;
   std::atomic_uint outstanding_saves_{0};

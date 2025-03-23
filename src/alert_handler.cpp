@@ -122,8 +122,8 @@ void alert_handler::handle_metadata_received_alert(
     lt::metadata_received_alert *a) {
   lt::torrent_handle t = a->handle;
 
-  std::lock_guard<std::mutex> l(metadata_mtx_);
-  metadata_cv_.notify_all();
+  std::lock_guard<std::mutex> l(torrent_mtx_);
+  torrent_cv_.notify_all();
 
   lt::piece_index_t piece_count{t.torrent_file()->num_pieces()};
   std::vector<std::pair<lt::piece_index_t, lt::download_priority_t>> priorities;
@@ -213,8 +213,8 @@ alert_handler::schedule_piece(lt::torrent_handle &t,
 
 void alert_handler::wait_metadata(lt::torrent_handle &t) {
   if (t.torrent_file() == nullptr) {
-    std::unique_lock<std::mutex> l(metadata_mtx_);
-    metadata_cv_.wait(l, [&t]() { return t.torrent_file() != nullptr; });
+    std::unique_lock<std::mutex> l(torrent_mtx_);
+    torrent_cv_.wait(l, [&t]() { return t.torrent_file() != nullptr; });
   }
 }
 
