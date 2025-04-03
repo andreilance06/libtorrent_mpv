@@ -313,7 +313,7 @@ public:
 
   ~http_session() { std::cerr << "HTTP session destroyed (" << ep_ << ")\n"; }
 
-  void start() { do_read(); }
+  void run() { do_read(); }
 
 private:
   void do_read() {
@@ -548,10 +548,11 @@ private:
       response += "\r\n\r\n";
 
       boost::system::error_code ec;
-      std::size_t written = net::write(socket_, net::buffer(response), ec);
+      std::size_t header_written =
+          net::write(socket_, net::buffer(response), ec);
 
       if (req.method == "HEAD" || ec)
-        return on_write(ec, written, req.keep_alive);
+        return on_write(ec, header_written, req.keep_alive);
 
       lt::peer_request mappings = info->map_file(file_index, range.start, 0);
       lt::peer_request end_mappings =
@@ -567,7 +568,7 @@ private:
 
       t.set_piece_deadline(start_piece, 5000);
 
-      std::size_t total_written = written;
+      std::size_t total_written = header_written;
       int readahead_pieces = 1;
       for (lt::piece_index_t i = start_piece; i <= end_piece; i++) {
         auto p = handler_->schedule_piece(t, i);
@@ -587,8 +588,7 @@ private:
           int piece_size = piece_data.size;
 
           if (i == start_piece) {
-            socket_.set_option(
-                net::socket_base::send_buffer_size(piece_data.size));
+            socket_.set_option(net::socket_base::send_buffer_size(piece_size));
             buffer_start += start_offset;
             piece_size -= start_offset;
           }
@@ -844,7 +844,7 @@ private:
       acceptor_.accept(socket, ec);
       if (!ec)
         std::thread([this, s = std::move(socket)]() mutable {
-          http_session(std::move(s), handler_, token_).start();
+          http_session(std::move(s), handler_, token_).run();
         }).detach();
       else
         fail(ec, "accept");
