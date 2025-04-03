@@ -602,6 +602,7 @@ private:
           if (ec)
             break;
         } catch (const std::future_error &e) {
+          ec.assign(net::error::interrupted, net::error::system_category);
           break;
         }
       }
