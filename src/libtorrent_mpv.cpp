@@ -104,7 +104,7 @@ static lt::add_torrent_params get_torrent_params(std::string id) {
   if (ext == ".fastresume") {
     std::ifstream in(id, std::ios_base::binary);
     std::vector<char> buf(std::istreambuf_iterator<char>(in), {});
-    return lt::read_resume_data(buf);
+    return lt::read_resume_data(buf, ec);
   }
 
   params.ti = std::make_shared<lt::torrent_info>(id, ec);
