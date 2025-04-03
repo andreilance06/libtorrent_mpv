@@ -295,17 +295,18 @@ public:
 
 class http_session {
   tcp::socket socket_;
+  std::shared_ptr<lt::session> session_;
   std::shared_ptr<handler::alert_handler> handler_;
   stop_token &token_;
-  std::shared_ptr<lt::session> session_;
   tcp::endpoint ep_;
+  std::shared_ptr<net::streambuf> buffer_;
 
 public:
   http_session(tcp::socket &&socket,
                std::shared_ptr<handler::alert_handler> handler,
                stop_token &token)
-      : socket_(std::move(socket)), handler_(handler), token_(token),
-        session_(handler_->session), ep_(socket_.remote_endpoint()) {
+      : socket_(std::move(socket)), session_(handler->session),
+        handler_(handler), token_(token), ep_(socket_.remote_endpoint()) {
     socket_.set_option(net::socket_base::keep_alive(true));
     socket_.set_option(tcp::no_delay(true));
     std::cerr << "HTTP session (" << ep_ << ")\n";
@@ -317,14 +318,13 @@ public:
 
 private:
   void do_read() {
-    auto buffer = std::make_shared<net::streambuf>();
+    buffer_.reset(new net::streambuf());
     boost::system::error_code ec;
-    std::size_t written = net::read_until(socket_, *buffer, "\r\n\r\n", ec);
-    on_read(ec, written, buffer);
+    std::size_t written = net::read_until(socket_, *buffer_, "\r\n\r\n", ec);
+    on_read(ec, written);
   }
 
-  void on_read(boost::system::error_code ec, std::size_t,
-               std::shared_ptr<net::streambuf> buffer) {
+  void on_read(boost::system::error_code ec, std::size_t) {
 
     if (ec == net::error::eof)
       return do_close();
@@ -332,7 +332,7 @@ private:
     if (ec)
       return fail(ec, "read");
 
-    std::istream request_stream(buffer.get());
+    std::istream request_stream(buffer_.get());
     std::string request_line;
     std::getline(request_stream, request_line);
 
@@ -364,7 +364,7 @@ private:
     if (req.method == "GET" || req.method == "HEAD")
       handle_get(std::move(req));
     else if (req.method == "POST")
-      handle_post(std::move(req), buffer);
+      handle_post(std::move(req));
     else if (req.method == "DELETE")
       handle_delete(std::move(req));
     else
@@ -634,9 +634,8 @@ private:
     return do_write(std::move(res));
   }
 
-  void handle_post(const request &&req,
-                   std::shared_ptr<net::streambuf> buffer) {
-    std::istream request_stream(buffer.get());
+  void handle_post(const request &&req) {
+    std::istream request_stream(buffer_.get());
     std::string body((std::istreambuf_iterator<char>(request_stream)),
                      std::istreambuf_iterator<char>());
     response res{};
