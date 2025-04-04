@@ -559,7 +559,8 @@ private:
           info->map_file(file_index, range.start + range.length, 0);
 
       lt::piece_index_t start_piece = mappings.piece;
-      lt::piece_index_t end_piece = end_mappings.piece;
+      lt::piece_index_t end_piece{
+          std::min(int(end_mappings.piece), int(info->num_pieces() - 1))};
       int64_t end_piece_size = info->files().piece_size(end_piece);
 
       int start_offset = mappings.start;
