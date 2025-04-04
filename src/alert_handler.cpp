@@ -1,6 +1,5 @@
 #include <boost/filesystem.hpp>
 #include <fstream>
-#include <future>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/hex.hpp>
 #include <libtorrent/session.hpp>
@@ -73,21 +72,24 @@ void alert_handler::handle_alert(lt::alert *a) {
 void alert_handler::handle_read_piece_alert(lt::read_piece_alert *a) {
 
   std::lock_guard<std::mutex> l(requests_mtx_);
-  auto request =
-      requests_.find(piece_request{a->handle.info_hashes(), a->piece, nullptr});
 
-  if (request == requests_.end())
+  auto range =
+      requests_.equal_range(piece_request{a->handle.info_hashes(), a->piece});
+
+  if (range.first == range.second)
     return;
 
-  request->promise->set_value(piece_entry{a->piece, a->buffer, a->size});
-  requests_.erase(request);
+  for (auto i = range.first; i != range.second; i++)
+    i->callback(piece_entry{a->piece, a->buffer, a->size});
+
+  requests_.erase(range.first, range.second);
 }
 
 void alert_handler::handle_piece_finished_alert(lt::piece_finished_alert *a) {
   lt::torrent_handle t = a->handle;
 
   std::lock_guard<std::mutex> l(requests_mtx_);
-  if (!requests_.count(piece_request{t.info_hashes(), a->piece_index, nullptr}))
+  if (!requests_.count(piece_request{t.info_hashes(), a->piece_index}))
     return;
 
   t.read_piece(a->piece_index);
@@ -179,29 +181,21 @@ void alert_handler::handle_torrent_finished_alert(
   t.save_resume_data(t.only_if_modified | t.save_info_dict);
 }
 
-std::shared_future<piece_entry>
-alert_handler::schedule_piece(lt::torrent_handle &t,
-                              lt::piece_index_t const piece) {
+void alert_handler::schedule_piece(lt::torrent_handle &t,
+                                   lt::piece_index_t const piece,
+                                   std::function<void(piece_entry)> callback) {
 
   std::lock_guard<std::mutex> l(requests_mtx_);
 
-  auto existing_entry =
-      requests_.find(piece_request{t.info_hashes(), piece, nullptr});
+  auto entry = requests_.emplace(t.info_hashes(), piece, callback);
 
-  if (existing_entry != requests_.end())
-    return existing_entry->future;
-
-  auto entry = requests_.emplace(t.info_hashes(), piece,
-                                 std::make_shared<std::promise<piece_entry>>());
-
-  std::shared_future<piece_entry> future{entry.first->future};
-
-  if (session == nullptr)
-    requests_.erase(entry.first);
-  else if (t.have_piece(piece))
+  if (session == nullptr) {
+    entry->callback(piece_entry{});
+    requests_.erase(entry);
+  } else if (t.have_piece(piece))
     t.read_piece(piece);
 
-  return future;
+  return;
 }
 
 bool alert_handler::wait_metadata(lt::torrent_handle &t) {
@@ -210,7 +204,7 @@ bool alert_handler::wait_metadata(lt::torrent_handle &t) {
 
   if (t.torrent_file() == nullptr) {
     std::unique_lock<std::mutex> l(torrent_mtx_);
-    torrent_cv_.wait(l, [this, &t]() {
+    torrent_cv_.wait_for(l, std::chrono::seconds(30), [this, &t]() {
       return t.torrent_file() != nullptr || session == nullptr;
     });
     return session != nullptr;
@@ -233,5 +227,7 @@ void alert_handler::stop() {
   }
   session.reset();
   torrent_cv_.notify_all();
+  for (auto req : requests_)
+    req.callback(piece_entry{});
   requests_.clear();
 }

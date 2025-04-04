@@ -18,14 +18,14 @@ struct piece_entry {
 struct piece_request {
   lt::info_hash_t info_hash;
   lt::piece_index_t piece;
-  std::shared_ptr<std::promise<piece_entry>> promise;
-  std::shared_future<piece_entry> future;
+  std::function<void(piece_entry)> callback;
 
   piece_request(lt::info_hash_t info, lt::piece_index_t p,
-                std::shared_ptr<std::promise<piece_entry>> pr)
-      : info_hash(info), piece(p), promise(std::move(pr)),
-        future(promise ? std::shared_future<piece_entry>(promise->get_future())
-                       : std::shared_future<piece_entry>()) {}
+                std::function<void(piece_entry)> callback)
+      : info_hash(info), piece(p), callback(callback) {}
+
+  piece_request(lt::info_hash_t info, lt::piece_index_t p)
+      : info_hash(info), piece(p) {}
 
   inline bool operator==(piece_request const &rq) const {
     return rq.info_hash == info_hash && rq.piece == piece;
@@ -46,8 +46,8 @@ public:
 
   alert_handler(lt::session_params params, boost::filesystem::path save_path);
 
-  std::shared_future<piece_entry> schedule_piece(lt::torrent_handle &t,
-                                                 lt::piece_index_t const piece);
+  void schedule_piece(lt::torrent_handle &t, lt::piece_index_t const piece,
+                      std::function<void(piece_entry)> callback);
 
   bool wait_metadata(lt::torrent_handle &t);
 
@@ -58,7 +58,7 @@ public:
 private:
   std::thread alert_thread_;
 
-  typedef std::set<piece_request> requests_t;
+  typedef std::multiset<piece_request> requests_t;
   std::mutex requests_mtx_;
   requests_t requests_;
 

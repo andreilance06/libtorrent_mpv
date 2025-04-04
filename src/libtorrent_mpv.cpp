@@ -250,6 +250,7 @@ class stop_token {
   std::atomic<bool> stop_{false};
   mutable std::mutex callback_mtx_;
   std::map<std::size_t, std::function<void()>> callbacks_;
+  std::condition_variable cv;
   std::size_t next_callback_id_ = 0; // Unique ID for each callback
 
 public:
@@ -258,7 +259,7 @@ public:
   // Request stop and invoke callbacks
   void request_stop() {
     std::lock_guard<std::mutex> lock(callback_mtx_);
-    if (stop_.exchange(true, std::memory_order_relaxed)) {
+    if (stop_.exchange(true)) {
       return; // Stop already requested
     }
     for (const auto &entry : callbacks_) {
@@ -266,15 +267,16 @@ public:
         entry.second();
       }
     }
+    cv.notify_all();
   }
 
   // Check if stop is requested
-  bool stop_requested() const { return stop_.load(std::memory_order_relaxed); }
+  bool stop_requested() const { return stop_.load(); }
 
   // Register a callback, returns a unique ID
   std::size_t add_callback(std::function<void()> callback) {
     std::lock_guard<std::mutex> lock(callback_mtx_);
-    if (stop_requested()) {
+    if (stop_.load()) {
       if (callback) {
         callback();
       }
@@ -291,9 +293,16 @@ public:
     std::lock_guard<std::mutex> lock(callback_mtx_);
     callbacks_.erase(id);
   }
+
+  void wait_stop() {
+    std::unique_lock<std::mutex> lock(callback_mtx_);
+    if (stop_.load())
+      return;
+    cv.wait(lock);
+  }
 };
 
-class http_session {
+class http_session : public std::enable_shared_from_this<http_session> {
   tcp::socket socket_;
   std::shared_ptr<lt::session> session_;
   std::shared_ptr<handler::alert_handler> handler_;
@@ -319,12 +328,15 @@ public:
 private:
   void do_read() {
     buffer_.reset(new net::streambuf());
-    boost::system::error_code ec;
-    std::size_t written = net::read_until(socket_, *buffer_, "\r\n\r\n", ec);
-    on_read(ec, written);
+    net::async_read_until(
+        socket_, *buffer_, "\r\n\r\n",
+        [self = shared_from_this()](const boost::system::error_code &ec,
+                                    std::size_t bytes_read) {
+          self->on_read(ec, bytes_read);
+        });
   }
 
-  void on_read(boost::system::error_code ec, std::size_t) {
+  void on_read(const boost::system::error_code &ec, std::size_t) {
 
     if (ec == net::error::eof)
       return do_close();
@@ -378,9 +390,12 @@ private:
 
     buf += "\r\n" + res.content;
 
-    boost::system::error_code ec;
-    std::size_t written = net::write(socket_, net::buffer(buf), ec);
-    on_write(ec, written, res.keep_alive);
+    net::async_write(
+        socket_, net::buffer(buf),
+        [self = shared_from_this(), keep_alive = res.keep_alive](
+            const boost::system::error_code &ec, std::size_t written) {
+          self->on_write(ec, written, keep_alive);
+        });
   }
 
   void on_write(boost::system::error_code ec, std::size_t, bool keep_alive) {
@@ -391,6 +406,69 @@ private:
       return do_close();
 
     do_read();
+  }
+
+  void do_stream(lt::torrent_handle t, lt::piece_index_t start_piece,
+                 lt::piece_index_t end_piece, lt::piece_index_t piece,
+                 int start_offset, int end_offset, bool keep_alive,
+                 std::size_t written = 0) {
+    handler_->schedule_piece(
+        t, piece,
+        [self = shared_from_this(), t, start_piece, end_piece, piece,
+         start_offset, end_offset, keep_alive,
+         written](piece_entry piece_data) {
+          if (piece_data.buffer == nullptr) {
+            std::cout << "interrupted: " << start_piece << "-" << end_piece
+                      << " " << piece << "\n";
+            return self->on_write(
+                net::error::make_error_code(net::error::interrupted), written,
+                keep_alive);
+          }
+
+          char *buffer_start = piece_data.buffer.get();
+          int piece_size = piece_data.size;
+
+          if (piece == start_piece) {
+            self->socket_.set_option(
+                net::socket_base::send_buffer_size(piece_size));
+            buffer_start += start_offset;
+            piece_size -= start_offset;
+          }
+
+          if (piece == end_piece)
+            piece_size -= end_offset;
+
+          net::dispatch(
+              self->socket_.get_executor(),
+              [self = std::move(self), t, start_piece, end_piece, piece,
+               start_offset, end_offset, keep_alive, written, buffer_start,
+               piece_size]() {
+                net::async_write(
+                    self->socket_, net::const_buffer(buffer_start, piece_size),
+                    [self, t, start_piece, end_piece, piece, start_offset,
+                     end_offset, keep_alive,
+                     written](const boost::system::error_code &ec,
+                              std::size_t transferred) {
+                      if (ec || piece == end_piece)
+                        self->on_write(ec, written + transferred, keep_alive);
+                      else
+                        self->do_stream(t, start_piece, end_piece,
+                                        lt::piece_index_t(int(piece) + 1),
+                                        start_offset, end_offset, keep_alive,
+                                        written + transferred);
+                    });
+              });
+        });
+
+    auto buffer_pieces = std::min(
+        lt::piece_index_t(int(piece) + (int(piece) - int(start_piece) + 1)),
+        end_piece);
+    for (lt::piece_index_t future_piece{int(piece) + 1};
+         future_piece <= buffer_pieces; future_piece++) {
+      if (t.have_piece(future_piece))
+        continue;
+      t.set_piece_deadline(future_piece, int(future_piece - piece) * 5000);
+    }
   }
 
   void do_close() {
@@ -569,46 +647,9 @@ private:
 
       t.set_piece_deadline(start_piece, 5000);
 
-      std::size_t total_written = header_written;
-      int readahead_pieces = 1;
-      for (lt::piece_index_t i = start_piece; i <= end_piece; i++) {
-        auto p = handler_->schedule_piece(t, i);
-
-        auto buffer_pieces =
-            std::min(lt::piece_index_t(int(i) + readahead_pieces++), end_piece);
-        for (lt::piece_index_t future_piece{int(i) + 1};
-             future_piece <= buffer_pieces; future_piece++) {
-          if (t.have_piece(future_piece))
-            continue;
-          t.set_piece_deadline(future_piece, int(future_piece - i) * 5000);
-        }
-
-        try {
-          piece_entry piece_data = p.get();
-          char *buffer_start = piece_data.buffer.get();
-          int piece_size = piece_data.size;
-
-          if (i == start_piece) {
-            socket_.set_option(net::socket_base::send_buffer_size(piece_size));
-            buffer_start += start_offset;
-            piece_size -= start_offset;
-          }
-
-          if (i == end_piece)
-            piece_size -= end_offset;
-
-          total_written +=
-              net::write(socket_, net::buffer(buffer_start, piece_size), ec);
-
-          if (ec)
-            break;
-        } catch (const std::future_error &e) {
-          ec.assign(net::error::interrupted, net::error::system_category);
-          break;
-        }
-      }
-
-      return on_write(ec, total_written, req.keep_alive);
+      do_stream(t, start_piece, end_piece, start_piece, start_offset,
+                end_offset, res.keep_alive);
+      return;
     }
 
     if (req.target == "/shutdown") {
@@ -812,17 +853,17 @@ private:
   }
 };
 
-class listener {
-  net::io_context::executor_type ex_;
+class torrent_server {
+  net::any_io_executor ex_;
   tcp::acceptor acceptor_;
   std::shared_ptr<handler::alert_handler> handler_;
   net::signal_set signals_;
   stop_token token_;
 
 public:
-  listener(net::io_context::executor_type ex, tcp::endpoint endpoint,
-           std::shared_ptr<handler::alert_handler> handler)
-      : ex_(ex), acceptor_(ex_, endpoint), handler_(handler),
+  torrent_server(net::any_io_executor ex, tcp::endpoint endpoint,
+                 std::shared_ptr<handler::alert_handler> handler)
+      : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
         signals_(ex, SIGINT, SIGTERM) {
     signals_.async_wait([this](boost::system::error_code ec, int) {
       if (!ec)
@@ -833,27 +874,27 @@ public:
       acceptor_.cancel();
       handler_->stop();
     });
-    std::thread([this]() { accept_loop(); }).detach();
+    do_accept();
   }
 
+  ~torrent_server() { token_.wait_stop(); }
+
 private:
-  void accept_loop() {
-    for (;;) {
-      boost::system::error_code ec;
-      tcp::socket socket{ex_};
-      acceptor_.accept(socket, ec);
-      if (!ec)
-        std::thread([this, s = std::move(socket)]() mutable {
-          http_session(std::move(s), handler_, token_).run();
-        }).detach();
-      else
-        fail(ec, "accept");
+  void do_accept() {
+    acceptor_.async_accept(
+        net::make_strand(ex_),
+        [this](const boost::system::error_code &ec, tcp::socket socket) {
+          if (!ec)
+            std::make_shared<http_session>(std::move(socket), handler_, token_)
+                ->run();
+          else if (ec == net::error::operation_aborted) {
+            std::cout << "Accept loop exiting...\n";
+            return;
+          } else
+            fail(ec, "accept");
 
-      if (token_.stop_requested())
-        break;
-    }
-
-    std::cout << "Accept loop exiting...\n";
+          do_accept();
+        });
   }
 };
 
@@ -886,7 +927,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  net::io_context ioc{1};
+  net::thread_pool pool(std::thread::hardware_concurrency());
   lt::session_params params;
   params.settings.set_int(lt::settings_pack::alert_mask,
                           lt::alert_category::status |
@@ -919,11 +960,11 @@ int main(int argc, char **argv) {
     handler->session->async_add_torrent(params);
   }
 
-  listener lsnr(ioc.get_executor(), tcp::endpoint{address, port}, handler);
-
+  torrent_server server(pool.get_executor(), tcp::endpoint{address, port},
+                        handler);
   std::cout << "Server running on port " << port << "...\n";
 
-  ioc.run();
+  pool.join();
   handler->join();
 
   std::cout << "Closing program...\n";
