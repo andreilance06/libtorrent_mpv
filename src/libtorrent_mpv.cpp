@@ -438,15 +438,12 @@ private:
           if (piece == end_piece)
             piece_size -= end_offset;
 
-          net::dispatch(
-              self->socket_.get_executor(),
-              [self = std::move(self), t, start_piece, end_piece, piece,
-               start_offset, end_offset, keep_alive, written, buffer_start,
-               piece_size]() {
                 net::async_write(
                     self->socket_, net::const_buffer(buffer_start, piece_size),
-                    [self, t, start_piece, end_piece, piece, start_offset,
-                     end_offset, keep_alive,
+              net::bind_executor(
+                  self->socket_.get_executor(),
+                  [self = std::move(self), t, start_piece, end_piece, piece,
+                   start_offset, end_offset, keep_alive,
                      written](const boost::system::error_code &ec,
                               std::size_t transferred) {
                       if (ec || piece == end_piece)
@@ -456,8 +453,7 @@ private:
                                         lt::piece_index_t(int(piece) + 1),
                                         start_offset, end_offset, keep_alive,
                                         written + transferred);
-                    });
-              });
+                  }));
         });
 
     auto buffer_pieces = std::min(
