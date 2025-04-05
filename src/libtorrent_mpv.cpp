@@ -850,14 +850,14 @@ private:
 };
 
 class torrent_server {
-  net::any_io_executor ex_;
+  net::thread_pool::executor_type ex_;
   tcp::acceptor acceptor_;
   std::shared_ptr<handler::alert_handler> handler_;
   net::signal_set signals_;
   stop_token token_;
 
 public:
-  torrent_server(net::any_io_executor ex, tcp::endpoint endpoint,
+  torrent_server(net::thread_pool::executor_type ex, tcp::endpoint endpoint,
                  std::shared_ptr<handler::alert_handler> handler)
       : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
         signals_(ex, SIGINT, SIGTERM) {
