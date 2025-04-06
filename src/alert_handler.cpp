@@ -140,7 +140,7 @@ void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
 
   std::lock_guard<std::mutex> l(requests_mtx_);
 
-  piece_request search_key{a->info_hashes, lt::piece_index_t{0}, nullptr};
+  piece_request search_key{a->info_hashes, lt::piece_index_t{0}};
   iter first = requests_.lower_bound(search_key);
 
   search_key.piece = lt::piece_index_t{INT_MAX};
@@ -158,12 +158,17 @@ void alert_handler::handle_save_resume_data_alert(
     lt::save_resume_data_alert *a) {
   auto path = save_path / "resume_data" /
               (lt::aux::to_hex(a->handle.info_hashes().v1) + ".fastresume");
+  auto tmp_path =
+      save_path / "resume_data" / lt::aux::to_hex(a->handle.info_hashes().v1);
 
-  std::ofstream out(path.c_str(), std::ios_base::binary | std::ios_base::trunc);
+  std::ofstream tmp(tmp_path.c_str(),
+                    std::ios_base::binary | std::ios_base::trunc);
   std::vector<char> buf = lt::write_resume_data_buf(a->params);
-  out.write(buf.data(), buf.size());
-  out.close();
+  tmp.write(buf.data(), buf.size());
+  tmp.close();
 
+  boost::system::error_code ec;
+  fs::rename(tmp_path, path, ec);
   if (outstanding_saves_)
     outstanding_saves_--;
 }
