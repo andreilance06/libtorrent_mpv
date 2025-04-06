@@ -438,22 +438,23 @@ private:
           if (piece == end_piece)
             piece_size -= end_offset;
 
+          // move piece_data.buffer to tmp to prevent its deallocation while
+          // writing
           net::async_write(
               self->socket_, net::const_buffer(buffer_start, piece_size),
-              net::bind_executor(
-                  self->socket_.get_executor(),
-                  [self = std::move(self), t, start_piece, end_piece, piece,
-                   start_offset, end_offset, keep_alive,
-                   written](const boost::system::error_code &ec,
-                            std::size_t transferred) {
-                    if (ec || piece == end_piece)
-                      self->on_write(ec, written + transferred, keep_alive);
-                    else
-                      self->do_stream(t, start_piece, end_piece,
-                                      lt::piece_index_t(int(piece) + 1),
-                                      start_offset, end_offset, keep_alive,
-                                      written + transferred);
-                  }));
+              [self = std::move(self), t, start_piece, end_piece, piece,
+               start_offset, end_offset, keep_alive, written,
+               tmp = std::move(piece_data.buffer)](
+                  const boost::system::error_code &ec,
+                  std::size_t transferred) {
+                if (ec || piece == end_piece)
+                  self->on_write(ec, written + transferred, keep_alive);
+                else
+                  self->do_stream(t, start_piece, end_piece,
+                                  lt::piece_index_t(int(piece) + 1),
+                                  start_offset, end_offset, keep_alive,
+                                  written + transferred);
+              });
         });
 
     auto buffer_pieces = std::min(
