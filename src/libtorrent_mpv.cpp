@@ -125,121 +125,74 @@ static lt::add_torrent_params get_torrent_params(std::string id) {
   return lt::add_torrent_params{};
 }
 
-static std::string mime_type(std::string path) {
-  auto const ext = [&path] {
-    auto const pos = path.rfind(".");
-    if (pos == std::string::npos)
-      return std::string{};
-    return path.substr(pos);
-  }();
+static std::string mime_type(const std::string &path) {
+  static const std::unordered_map<std::string, std::string> mime_types = {
+      {".htm", "text/html"},
+      {".html", "text/html"},
+      {".php", "text/html"},
+      {".css", "text/css"},
+      {".txt", "text/plain"},
+      {".js", "application/javascript"},
+      {".json", "application/json"},
+      {".xml", "application/xml"},
 
-  if (ext == ".htm")
-    return "text/html";
-  if (ext == ".html")
-    return "text/html";
-  if (ext == ".php")
-    return "text/html";
-  if (ext == ".css")
-    return "text/css";
-  if (ext == ".txt")
-    return "text/plain";
-  if (ext == ".js")
-    return "application/javascript";
-  if (ext == ".json")
-    return "application/json";
-  if (ext == ".xml")
-    return "application/xml";
+      {".png", "image/png"},
+      {".jpe", "image/jpeg"},
+      {".jpeg", "image/jpeg"},
+      {".jpg", "image/jpeg"},
+      {".gif", "image/gif"},
+      {".bmp", "image/bmp"},
+      {".ico", "image/vnd.microsoft.icon"},
+      {".tiff", "image/tiff"},
+      {".tif", "image/tiff"},
+      {".svg", "image/svg+xml"},
+      {".svgz", "image/svg+xml"},
 
-  if (ext == ".png")
-    return "image/png";
-  if (ext == ".jpe")
-    return "image/jpeg";
-  if (ext == ".jpeg")
-    return "image/jpeg";
-  if (ext == ".jpg")
-    return "image/jpeg";
-  if (ext == ".gif")
-    return "image/gif";
-  if (ext == ".bmp")
-    return "image/bmp";
-  if (ext == ".ico")
-    return "image/vnd.microsoft.icon";
-  if (ext == ".tiff")
-    return "image/tiff";
-  if (ext == ".tif")
-    return "image/tiff";
-  if (ext == ".svg")
-    return "image/svg+xml";
-  if (ext == ".svgz")
-    return "image/svg+xml";
+      {".mp4", "video/mp4"},
+      {".mkv", "video/x-matroska"},
+      {".webm", "video/webm"},
+      {".ogv", "video/ogg"},
+      {".avi", "video/x-msvideo"},
+      {".mov", "video/quicktime"},
+      {".wmv", "video/x-ms-wmv"},
+      {".flv", "video/x-flv"},
+      {".mpeg", "video/mpeg"},
+      {".mpg", "video/mpeg"},
+      {".3gp", "video/3gpp"},
+      {".m4v", "video/x-m4v"},
+      {".ts", "video/mp2t"},
+      {".f4v", "video/x-f4v"},
+      {".rm", "application/vnd.rn-realmedia"},
+      {".rmvb", "application/vnd.rn-realmedia-vbr"},
 
-  if (ext == ".mp4")
-    return "video/mp4";
-  if (ext == ".mkv")
-    return "video/x-matroska";
-  if (ext == ".webm")
-    return "video/webm";
-  if (ext == ".ogv")
-    return "video/ogg";
-  if (ext == ".avi")
-    return "video/x-msvideo";
-  if (ext == ".mov")
-    return "video/quicktime";
-  if (ext == ".wmv")
-    return "video/x-ms-wmv";
-  if (ext == ".flv")
-    return "video/x-flv";
-  if (ext == ".mpeg")
-    return "video/mpeg";
-  if (ext == ".mpg")
-    return "video/mpeg";
-  if (ext == ".3gp")
-    return "video/3gpp";
-  if (ext == ".m4v")
-    return "video/x-m4v";
-  if (ext == ".ts")
-    return "video/mp2t";
-  if (ext == ".f4v")
-    return "video/x-f4v";
-  if (ext == ".rm")
-    return "application/vnd.rn-realmedia";
-  if (ext == ".rmvb")
-    return "application/vnd.rn-realmedia-vbr";
+      {".mp3", "audio/mpeg"},
+      {".aac", "audio/aac"},
+      {".wav", "audio/wav"},
+      {".flac", "audio/flac"},
+      {".ogg", "audio/ogg"},
+      {".m4a", "audio/mp4"},
+      {".wma", "audio/x-ms-wma"},
+      {".alac", "audio/alac"},
+      {".aiff", "audio/aiff"},
+      {".opus", "audio/opus"},
+      {".ape", "audio/ape"},
+      {".amr", "audio/amr"},
+      {".mid", "audio/midi"},
+      {".xmf", "audio/xmf"},
+      {".rtttl", "audio/x-rtttl"},
+      {".midi", "audio/midi"}};
 
-  if (ext == ".mp3")
-    return "audio/mpeg";
-  if (ext == ".aac")
-    return "audio/aac";
-  if (ext == ".wav")
-    return "audio/wav";
-  if (ext == ".flac")
-    return "audio/flac";
-  if (ext == ".ogg")
-    return "audio/ogg";
-  if (ext == ".m4a")
-    return "audio/mp4";
-  if (ext == ".wma")
-    return "audio/x-ms-wma";
-  if (ext == ".alac")
-    return "audio/alac";
-  if (ext == ".aiff")
-    return "audio/aiff";
-  if (ext == ".opus")
-    return "audio/opus";
-  if (ext == ".ape")
-    return "audio/ape";
-  if (ext == ".amr")
-    return "audio/amr";
-  if (ext == ".mid")
-    return "audio/midi";
-  if (ext == ".xmf")
-    return "audio/xmf";
-  if (ext == ".rtttl")
-    return "audio/x-rtttl";
-  if (ext == ".midi")
-    return "audio/midi";
+  auto const pos = path.rfind(".");
+  if (pos == std::string::npos)
+    return "application/octet-stream";
 
-  return "application/octet-stream"; // Default fallback MIME type
+  std::string ext = path.substr(pos);
+  auto it = mime_types.find(ext);
+  if (it != mime_types.end()) {
+    return it->second;
+  }
+
+  return "application/octet-stream";
 }
 
 void fail(boost::system::error_code ec, char const *what) {
