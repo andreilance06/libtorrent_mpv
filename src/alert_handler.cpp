@@ -89,7 +89,8 @@ void alert_handler::handle_piece_finished_alert(lt::piece_finished_alert *a) {
   lt::torrent_handle t = a->handle;
 
   std::lock_guard<std::mutex> l(requests_mtx_);
-  if (!requests_.count(piece_request{t.info_hashes(), a->piece_index}))
+  if (requests_.find(piece_request{t.info_hashes(), a->piece_index}) ==
+      requests_.end())
     return;
 
   t.read_piece(a->piece_index);
@@ -199,8 +200,6 @@ void alert_handler::schedule_piece(lt::torrent_handle &t,
     requests_.erase(entry);
   } else if (t.have_piece(piece))
     t.read_piece(piece);
-
-  return;
 }
 
 bool alert_handler::wait_metadata(lt::torrent_handle &t) {
