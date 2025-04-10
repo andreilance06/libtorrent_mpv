@@ -112,6 +112,7 @@ void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
 
   lt::piece_index_t piece_count{t.torrent_file()->num_pieces()};
   std::vector<std::pair<lt::piece_index_t, lt::download_priority_t>> priorities;
+  priorities.reserve(int(piece_count));
   for (lt::piece_index_t i{0}; i < piece_count; i++)
     priorities.push_back(std::pair<lt::piece_index_t, lt::download_priority_t>(
         i, lt::dont_download));
@@ -129,6 +130,7 @@ void alert_handler::handle_metadata_received_alert(
 
   lt::piece_index_t piece_count{t.torrent_file()->num_pieces()};
   std::vector<std::pair<lt::piece_index_t, lt::download_priority_t>> priorities;
+  priorities.reserve(int(piece_count));
   for (lt::piece_index_t i{0}; i < piece_count; i++)
     priorities.push_back(std::pair<lt::piece_index_t, lt::download_priority_t>(
         i, lt::dont_download));
