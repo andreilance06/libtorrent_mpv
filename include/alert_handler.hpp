@@ -46,10 +46,11 @@ public:
 
   alert_handler(lt::session_params params, boost::filesystem::path save_path);
 
-  void schedule_piece(lt::torrent_handle &t, lt::piece_index_t const piece,
-                      std::function<void(piece_entry)> callback);
+  void schedule_piece(const lt::torrent_handle &t,
+                      lt::piece_index_t const piece,
+                      std::function<void(piece_entry)> &&callback);
 
-  bool wait_metadata(lt::torrent_handle &t);
+  bool wait_metadata(const lt::torrent_handle &t);
 
   void join();
 

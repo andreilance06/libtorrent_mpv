@@ -20,14 +20,16 @@ alert_handler::alert_handler(lt::session_params params,
 
   alert_thread_ = std::thread([this] {
     auto temp_ptr = session;
+    std::vector<lt::alert *> alerts;
     for (;;) {
+      alerts.clear();
       if (temp_ptr.unique() && outstanding_saves_ == 0)
         break;
 
-      std::vector<lt::alert *> alerts;
       temp_ptr->pop_alerts(&alerts);
       for (auto a : alerts)
         handle_alert(a);
+
       temp_ptr->wait_for_alert(std::chrono::seconds(1));
     }
 
@@ -189,13 +191,13 @@ void alert_handler::handle_torrent_finished_alert(
   t.save_resume_data(t.only_if_modified | t.save_info_dict);
 }
 
-void alert_handler::schedule_piece(lt::torrent_handle &t,
-                                   lt::piece_index_t const piece,
-                                   std::function<void(piece_entry)> callback) {
+void alert_handler::schedule_piece(
+    const lt::torrent_handle &t, lt::piece_index_t const piece,
+    std::function<void(piece_entry)> &&callback) {
 
   std::lock_guard<std::mutex> l(requests_mtx_);
 
-  auto entry = requests_.emplace(t.info_hashes(), piece, callback);
+  auto entry = requests_.emplace(t.info_hashes(), piece, std::move(callback));
 
   if (session == nullptr) {
     entry->callback(piece_entry{});
@@ -204,19 +206,19 @@ void alert_handler::schedule_piece(lt::torrent_handle &t,
     t.read_piece(piece);
 }
 
-bool alert_handler::wait_metadata(lt::torrent_handle &t) {
+bool alert_handler::wait_metadata(const lt::torrent_handle &t) {
   if (session == nullptr)
     return false;
 
-  if (t.torrent_file() == nullptr) {
-    std::unique_lock<std::mutex> l(torrent_mtx_);
-    torrent_cv_.wait_for(l, std::chrono::seconds(30), [this, &t]() {
-      return t.torrent_file() != nullptr || session == nullptr;
-    });
-    return session != nullptr;
-  }
+  if (t.torrent_file() != nullptr)
+    return true;
 
-  return true;
+  std::unique_lock<std::mutex> l(torrent_mtx_);
+  torrent_cv_.wait_for(l, std::chrono::seconds(30), [this, &t]() {
+    return session == nullptr || t.torrent_file() != nullptr;
+  });
+
+  return session != nullptr;
 }
 
 void alert_handler::join() { alert_thread_.join(); }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
+#include <boost/container/flat_set.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
@@ -59,12 +60,21 @@ struct wrapped_file {
   int64_t Length;
   std::string MimeType;
   int depth;
+
+  wrapped_file(const std::string &name, const std::string &url, int64_t length,
+               const std::string &mime, int d)
+      : Name(name), URL(url), Length(length), MimeType(mime), depth(d) {}
+
+  bool operator<(const wrapped_file &other) const {
+    return std::tie(depth, Name, URL) <
+           std::tie(other.depth, other.Name, other.URL);
+  }
 };
 
 struct wrapped_torrent {
   std::string Name;
   std::string InfoHash;
-  std::vector<wrapped_file> Files;
+  boost::container::flat_set<wrapped_file> Files;
   int64_t Length;
   std::string Playlist;
 };
@@ -90,16 +100,16 @@ static boost::json::value to_json(const wrapped_torrent &torrent) {
           {"Playlist", torrent.Playlist}};
 }
 
-static lt::add_torrent_params get_torrent_params(std::string id) {
+static lt::add_torrent_params get_torrent_params(const std::string &id) {
   lt::add_torrent_params params;
   lt::error_code ec;
 
-  auto const ext = [&id] {
-    auto const pos = id.rfind(".");
-    if (pos == std::string::npos)
-      return std::string{};
-    return id.substr(pos);
-  }();
+  auto const pos = id.rfind(".");
+  std::string ext;
+  if (pos == std::string::npos)
+    ext = std::string{};
+  else
+    ext = id.substr(pos);
 
   if (ext == ".fastresume") {
     std::ifstream in(id, std::ios_base::binary);
@@ -195,7 +205,7 @@ static std::string mime_type(const std::string &path) {
   return "application/octet-stream";
 }
 
-void fail(boost::system::error_code ec, char const *what) {
+void fail(const boost::system::error_code &ec, char const *what) {
   std::cerr << what << ": " << ec.message() << "\n";
 }
 
@@ -227,12 +237,10 @@ public:
   bool stop_requested() const { return stop_.load(); }
 
   // Register a callback, returns a unique ID
-  std::size_t add_callback(std::function<void()> callback) {
+  std::size_t add_callback(std::function<void()> &&callback) {
     std::lock_guard<std::mutex> lock(callback_mtx_);
     if (stop_.load()) {
-      if (callback) {
-        callback();
-      }
+      callback();
       return 0; // Callback executed immediately, no ID needed
     } else {
       std::size_t id = next_callback_id_++;
@@ -327,16 +335,16 @@ private:
 
     // Handle the request based on the method
     if (req.method == "GET" || req.method == "HEAD")
-      handle_get(std::move(req));
+      handle_get(req);
     else if (req.method == "POST")
-      handle_post(std::move(req));
+      handle_post(req);
     else if (req.method == "DELETE")
-      handle_delete(std::move(req));
+      handle_delete(req);
     else
-      handle_no_method(std::move(req));
+      handle_no_method(req);
   }
 
-  void do_write(const response &&res) {
+  void do_write(const response &res) {
     std::string buf = "HTTP/1.1 " + std::to_string(res.status) + "\r\n";
     for (auto &h : res.headers)
       buf += h.first + ": " + h.second + "\r\n";
@@ -351,7 +359,8 @@ private:
         });
   }
 
-  void on_write(boost::system::error_code ec, std::size_t, bool keep_alive) {
+  void on_write(const boost::system::error_code &ec, std::size_t,
+                const bool keep_alive) {
     if (ec)
       return fail(ec, "write");
 
@@ -361,10 +370,10 @@ private:
     do_read();
   }
 
-  void do_stream(lt::torrent_handle t, lt::piece_index_t start_piece,
-                 lt::piece_index_t end_piece, lt::piece_index_t piece,
-                 int start_offset, int end_offset, bool keep_alive,
-                 std::size_t written = 0) {
+  void do_stream(lt::torrent_handle t, const lt::piece_index_t start_piece,
+                 const lt::piece_index_t end_piece, lt::piece_index_t piece,
+                 const int start_offset, const int end_offset,
+                 const bool keep_alive, std::size_t written = 0) {
     handler_->schedule_piece(
         t, piece,
         [self = shared_from_this(), t, start_piece, end_piece, piece,
@@ -426,7 +435,7 @@ private:
     socket_.shutdown(tcp::socket::shutdown_send, ec);
   }
 
-  void handle_get(const request &&req) {
+  void handle_get(const request &req) {
     response res{};
     res.keep_alive = req.keep_alive;
     res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
@@ -434,7 +443,7 @@ private:
     if (req.target == "/torrents") {
       boost::json::array torrents;
       for (auto &t : session_->get_torrents()) {
-        std::shared_ptr<const lt::torrent_info> info = t.torrent_file();
+        auto info = t.torrent_file();
         if (info == nullptr)
           continue;
 
@@ -450,7 +459,7 @@ private:
       if (req.method == "GET")
         res.content = std::move(content);
 
-      return do_write(std::move(res));
+      return do_write(res);
     }
 
     if (std::regex_search(req.target,
@@ -469,7 +478,7 @@ private:
         if (req.method == "GET")
           res.content = std::move(content);
 
-        return do_write(std::move(res));
+        return do_write(res);
       }
 
       if (!handler_->wait_metadata(t)) {
@@ -480,7 +489,7 @@ private:
         if (req.method == "GET")
           res.content = std::move(content);
 
-        return do_write(std::move(res));
+        return do_write(res);
       }
 
       std::string content = build_playlist(wrap_files(t.torrent_file()));
@@ -490,7 +499,7 @@ private:
       if (req.method == "GET")
         res.content = std::move(content);
 
-      return do_write(std::move(res));
+      return do_write(res);
     }
 
     if (std::regex_search(req.target,
@@ -513,7 +522,7 @@ private:
         if (req.method == "GET")
           res.content = std::move(content);
 
-        return do_write(std::move(res));
+        return do_write(res);
       }
 
       if (!handler_->wait_metadata(t)) {
@@ -524,7 +533,7 @@ private:
         if (req.method == "GET")
           res.content = std::move(content);
 
-        return do_write(std::move(res));
+        return do_write(res);
       }
 
       auto info = t.torrent_file();
@@ -545,7 +554,7 @@ private:
         if (req.method == "GET")
           res.content = std::move(content);
 
-        return do_write(std::move(res));
+        return do_write(res);
       }
 
       int64_t size = info->files().file_size(file_index);
@@ -612,7 +621,7 @@ private:
       if (req.method == "GET")
         res.content = std::move(content);
 
-      do_write(std::move(res));
+      do_write(res);
       return token_.request_stop();
     }
 
@@ -623,10 +632,10 @@ private:
     if (req.method == "GET")
       res.content = std::move(content);
 
-    return do_write(std::move(res));
+    return do_write(res);
   }
 
-  void handle_post(const request &&req) {
+  void handle_post(const request &req) {
     std::istream request_stream(buffer_.get());
     std::string body((std::istreambuf_iterator<char>(request_stream)),
                      std::istreambuf_iterator<char>());
@@ -641,7 +650,7 @@ private:
       res.headers["Content-Length"] = std::to_string(content.length());
       res.content = std::move(content);
 
-      return do_write(std::move(res));
+      return do_write(res);
     }
 
     lt::add_torrent_params params = get_torrent_params(body);
@@ -658,7 +667,7 @@ private:
         res.headers["Content-Length"] = std::to_string(content.length());
         res.content = std::move(content);
 
-        return do_write(std::move(res));
+        return do_write(res);
       }
     }
 
@@ -670,7 +679,7 @@ private:
       if (req.method == "GET")
         res.content = std::move(content);
 
-      return do_write(std::move(res));
+      return do_write(res);
     }
 
     std::string content = build_playlist(wrap_files(t.torrent_file()));
@@ -679,10 +688,10 @@ private:
     res.headers["Content-Length"] = std::to_string(content.length());
     res.content = std::move(content);
 
-    return do_write(std::move(res));
+    return do_write(res);
   }
 
-  void handle_delete(const request &&req) {
+  void handle_delete(const request &req) {
     response res{};
     res.keep_alive = req.keep_alive;
     res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
@@ -702,7 +711,7 @@ private:
         res.headers["Content-Length"] = std::to_string(content.length());
         res.content = std::move(content);
 
-        return do_write(std::move(res));
+        return do_write(res);
       }
 
       if (req.target.find("?DeleteFiles=true") == std::string::npos)
@@ -716,7 +725,7 @@ private:
       res.headers["Content-Length"] = std::to_string(content.length());
       res.content = std::move(content);
 
-      return do_write(std::move(res));
+      return do_write(res);
     }
 
     std::string content = "Forbidden";
@@ -725,10 +734,10 @@ private:
     res.headers["Content-Length"] = std::to_string(content.length());
     res.content = std::move(content);
 
-    return do_write(std::move(res));
+    return do_write(res);
   }
 
-  void handle_no_method(const request &&req) {
+  void handle_no_method(const request &req) {
     std::string content = "Method not allowed";
     response res{};
     res.keep_alive = req.keep_alive;
@@ -738,10 +747,11 @@ private:
     res.headers["Content-Length"] = std::to_string(content.length());
     res.content = std::move(content);
 
-    return do_write(std::move(res));
+    return do_write(res);
   }
 
-  std::string build_playlist(const std::vector<wrapped_file> wf) {
+  std::string
+  build_playlist(const boost::container::flat_set<wrapped_file> &wf) {
     std::string playlist;
 
     playlist.append("#EXTM3U\n");
@@ -756,48 +766,38 @@ private:
   }
 
   wrapped_torrent wrap_torrent(std::shared_ptr<const lt::torrent_info> info) {
-    std::vector<wrapped_file> files = wrap_files(info);
+    boost::container::flat_set<wrapped_file> files = wrap_files(info);
 
     return wrapped_torrent{info->name(),
                            lt::aux::to_hex(info->info_hashes().v1), files,
                            info->total_size(), build_playlist(files)};
   }
 
-  std::vector<wrapped_file>
+  boost::container::flat_set<wrapped_file>
   wrap_files(std::shared_ptr<const lt::torrent_info> info) {
     int n = info->num_files();
 
-    std::vector<wrapped_file> files;
-    files.reserve(n);
+    boost::container::flat_set<wrapped_file> files;
 
     std::string address = getLocalIp();
     std::string port = std::to_string(socket_.local_endpoint().port());
 
     for (lt::file_index_t i{0}; i < lt::file_index_t(n); i++) {
-      wrapped_file f;
       std::string path = info->files().file_path(i);
       std::replace(path.begin(), path.end(), '\\', '/');
 
       std::size_t pos = path.rfind("/") + 1;
-      f.Name = path.substr(pos);
-      f.URL = "http://" + address + ":" + port + "/torrents/" +
-              lt::aux::to_hex(info->info_hashes().v1) + "/" + path;
-      f.Length = info->files().file_size(i);
-      f.MimeType = mime_type(path);
-      f.depth = 0;
-
+      int depth = 0;
       for (std::size_t c = 0; c < path.length(); c++)
         if (path[c] == '/')
-          f.depth++;
+          depth++;
 
-      files.push_back(f);
+      auto iter = files.emplace(
+          path.substr(pos),
+          "http://" + address + ":" + port + "/torrents/" +
+              lt::aux::to_hex(info->info_hashes().v1) + "/" + path,
+          info->files().file_size(i), mime_type(path), depth);
     }
-
-    std::sort(files.begin(), files.end(), [](wrapped_file a, wrapped_file b) {
-      if (a.depth != b.depth)
-        return a.depth < b.depth;
-      return a.Name < b.Name;
-    });
 
     return files;
   }
