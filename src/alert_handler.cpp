@@ -5,6 +5,7 @@
 #include <libtorrent/session.hpp>
 #include <libtorrent/write_resume_data.hpp>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 
 #include <iostream>
@@ -73,27 +74,29 @@ void alert_handler::handle_alert(lt::alert *a) {
 
 void alert_handler::handle_read_piece_alert(lt::read_piece_alert *a) {
 
-  std::lock_guard<std::mutex> l(requests_mtx_);
+  std::unique_lock<std::shared_mutex> l(piece_requests_mtx_);
 
-  auto range =
-      requests_.equal_range(piece_request{a->handle.info_hashes(), a->piece});
+  auto [start, end] = piece_requests_.equal_range(
+      piece_request{a->handle.info_hashes(), a->piece});
 
-  if (range.first == range.second)
+  if (start == end)
     return;
 
-  for (auto i = range.first; i != range.second; i++)
+  for (auto i = start; i != end; i++)
     i->callback(piece_entry{a->piece, a->buffer, a->size});
 
-  requests_.erase(range.first, range.second);
+  piece_requests_.erase(start, end);
+  l.unlock();
 }
 
 void alert_handler::handle_piece_finished_alert(lt::piece_finished_alert *a) {
   lt::torrent_handle t = a->handle;
 
-  std::lock_guard<std::mutex> l(requests_mtx_);
-  if (requests_.find(piece_request{t.info_hashes(), a->piece_index}) ==
-      requests_.end())
+  std::shared_lock<std::shared_mutex> l(piece_requests_mtx_);
+  if (piece_requests_.find(piece_request{t.info_hashes(), a->piece_index}) ==
+      piece_requests_.end())
     return;
+  l.unlock();
 
   t.read_piece(a->piece_index);
 }
@@ -126,11 +129,20 @@ void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
 void alert_handler::handle_metadata_received_alert(
     lt::metadata_received_alert *a) {
   lt::torrent_handle t = a->handle;
+  auto info = t.torrent_file();
 
-  std::lock_guard<std::mutex> l(torrent_mtx_);
-  torrent_cv_.notify_all();
+  std::unique_lock<std::mutex> l(torrent_requests_mtx_);
+  auto [start, end] =
+      torrent_requests_.equal_range(torrent_request{t.info_hashes()});
 
-  lt::piece_index_t piece_count{t.torrent_file()->num_pieces()};
+  if (start != end) {
+    for (auto i = start; i != end; i++)
+      i->callback(info);
+  }
+  torrent_requests_.erase(start, end);
+  l.unlock();
+
+  lt::piece_index_t piece_count{info->num_pieces()};
   std::vector<std::pair<lt::piece_index_t, lt::download_priority_t>> priorities;
   priorities.reserve(int(piece_count));
   for (lt::piece_index_t i{0}; i < piece_count; i++)
@@ -140,18 +152,25 @@ void alert_handler::handle_metadata_received_alert(
 }
 
 void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
-
-  typedef requests_t::iterator iter;
-
-  std::lock_guard<std::mutex> l(requests_mtx_);
-
+  std::unique_lock<std::shared_mutex> l1(piece_requests_mtx_);
   piece_request search_key{a->info_hashes, lt::piece_index_t{0}};
-  iter first = requests_.lower_bound(search_key);
+  auto first = piece_requests_.lower_bound(search_key);
 
   search_key.piece = lt::piece_index_t{INT_MAX};
-  iter last = requests_.upper_bound(search_key);
+  auto last = piece_requests_.upper_bound(search_key);
 
-  requests_.erase(first, last);
+  for (auto i = first; i != last; i++)
+    i->callback({});
+  piece_requests_.erase(first, last);
+  l1.unlock();
+
+  std::unique_lock<std::mutex> l2(torrent_requests_mtx_);
+  auto [start, end] =
+      torrent_requests_.equal_range(torrent_request{a->info_hashes});
+  for (auto i = start; i != end; i++)
+    i->callback({});
+  torrent_requests_.erase(start, end);
+  l2.unlock();
 
   boost::system::error_code ec;
   fs::remove(save_path / "resume_data" /
@@ -191,41 +210,38 @@ void alert_handler::handle_torrent_finished_alert(
   t.save_resume_data(t.only_if_modified | t.save_info_dict);
 }
 
-void alert_handler::schedule_piece(
-    const lt::torrent_handle &t, lt::piece_index_t const piece,
-    std::function<void(piece_entry)> &&callback) {
+void alert_handler::schedule_piece(const lt::torrent_handle &t,
+                                   lt::piece_index_t const piece,
+                                   std::function<void(piece_entry)> callback) {
 
-  std::lock_guard<std::mutex> l(requests_mtx_);
+  if (session == nullptr || !t.is_valid() || !t.in_session())
+    return callback({});
 
-  auto entry = requests_.emplace(t.info_hashes(), piece, std::move(callback));
-
-  if (session == nullptr) {
-    entry->callback(piece_entry{});
-    requests_.erase(entry);
-  } else if (t.have_piece(piece))
+  std::unique_lock<std::shared_mutex> l(piece_requests_mtx_);
+  auto entry = piece_requests_.emplace(t.info_hashes(), piece, callback);
+  l.unlock();
+  if (t.have_piece(piece))
     t.read_piece(piece);
 }
 
-bool alert_handler::wait_metadata(const lt::torrent_handle &t) {
-  if (session == nullptr)
-    return false;
+void alert_handler::wait_metadata(
+    const lt::torrent_handle &t,
+    std::function<void(std::shared_ptr<const lt::torrent_info>)> callback) {
+  if (session == nullptr || !t.is_valid() || !t.in_session())
+    return callback({});
 
-  if (t.torrent_file() != nullptr)
-    return true;
+  if (auto info = t.torrent_file(); info != nullptr)
+    return callback(info);
 
-  std::unique_lock<std::mutex> l(torrent_mtx_);
-  torrent_cv_.wait_for(l, std::chrono::seconds(30), [this, &t]() {
-    return session == nullptr || t.torrent_file() != nullptr;
-  });
-
-  return session != nullptr;
+  std::lock_guard<std::mutex> l(torrent_requests_mtx_);
+  torrent_requests_.emplace(t.info_hashes(), callback);
 }
 
 void alert_handler::join() { alert_thread_.join(); }
 
 void alert_handler::stop() {
-  std::lock_guard<std::mutex> l1(requests_mtx_);
-  std::lock_guard<std::mutex> l2(torrent_mtx_);
+  std::unique_lock<std::shared_mutex> l1(piece_requests_mtx_);
+  std::lock_guard<std::mutex> l2(torrent_requests_mtx_);
   for (auto &t : session->get_torrents()) {
     if (t.torrent_file() == nullptr)
       continue;
@@ -234,8 +250,10 @@ void alert_handler::stop() {
     t.save_resume_data(t.only_if_modified | t.save_info_dict);
   }
   session.reset();
-  torrent_cv_.notify_all();
-  for (auto req : requests_)
-    req.callback(piece_entry{});
-  requests_.clear();
+  for (auto req : torrent_requests_)
+    req.callback({});
+  torrent_requests_.clear();
+  for (auto req : piece_requests_)
+    req.callback({});
+  piece_requests_.clear();
 }

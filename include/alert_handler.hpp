@@ -8,6 +8,7 @@
 #include <libtorrent/hex.hpp>
 #include <libtorrent/session.hpp>
 #include <mutex>
+#include <shared_mutex>
 
 struct piece_entry {
   lt::piece_index_t piece;
@@ -37,6 +38,27 @@ struct piece_request {
   }
 };
 
+struct torrent_request {
+  lt::info_hash_t info_hash;
+  std::function<void(std::shared_ptr<const lt::torrent_info>)> callback;
+
+  torrent_request(
+      lt::info_hash_t info,
+      std::function<void(std::shared_ptr<const lt::torrent_info>)> callback)
+      : info_hash(info), callback(callback) {}
+
+  torrent_request(lt::info_hash_t info)
+      : info_hash(info) {}
+
+  inline bool operator==(torrent_request const &rq) const {
+    return rq.info_hash == info_hash;
+  }
+
+  inline bool operator<(torrent_request const &rq) const {
+    return info_hash < rq.info_hash;
+  }
+};
+
 namespace handler {
 class alert_handler {
 
@@ -48,9 +70,11 @@ public:
 
   void schedule_piece(const lt::torrent_handle &t,
                       lt::piece_index_t const piece,
-                      std::function<void(piece_entry)> &&callback);
+                      std::function<void(piece_entry)> callback);
 
-  bool wait_metadata(const lt::torrent_handle &t);
+  void wait_metadata(
+      const lt::torrent_handle &t,
+      std::function<void(std::shared_ptr<const lt::torrent_info>)> callback);
 
   void join();
 
@@ -59,12 +83,13 @@ public:
 private:
   std::thread alert_thread_;
 
-  typedef std::multiset<piece_request> requests_t;
-  std::mutex requests_mtx_;
-  requests_t requests_;
+  typedef std::multiset<piece_request> piece_req_t;
+  std::shared_mutex piece_requests_mtx_;
+  piece_req_t piece_requests_;
 
-  std::mutex torrent_mtx_;
-  std::condition_variable torrent_cv_;
+  typedef std::multiset<torrent_request> torrent_req_t;
+  std::mutex torrent_requests_mtx_;
+  torrent_req_t torrent_requests_;
 
   std::atomic_uint outstanding_saves_{0};
 

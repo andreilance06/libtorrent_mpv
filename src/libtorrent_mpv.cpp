@@ -1,13 +1,11 @@
 #include "alert_handler.hpp"
 #include "range_parser.hpp"
-#include <algorithm>
-#include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
 #include <boost/container/flat_set.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/json.hpp>
 #include <boost/program_options.hpp>
-#include <boost/url.hpp>
+#include <boost/url/decode_view.hpp>
 #include <fstream>
 #include <iostream>
 #include <libtorrent/alert_types.hpp>
@@ -19,6 +17,7 @@
 #include <map>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace net = boost::asio;
@@ -41,15 +40,15 @@ std::string getLocalIp() {
 }
 
 struct request {
-  std::string method;
-  std::string target;
-  std::map<std::string, std::string> headers;
+  std::string_view method;
+  std::string_view target;
+  std::map<std::string_view, std::string_view> headers;
   bool keep_alive;
 };
 
 struct response {
   int status;
-  std::map<std::string, std::string> headers;
+  std::map<std::string_view, std::string_view> headers;
   std::string content;
   bool keep_alive;
 };
@@ -61,8 +60,8 @@ struct wrapped_file {
   std::string MimeType;
   int depth;
 
-  wrapped_file(const std::string &name, const std::string &url, int64_t length,
-               const std::string &mime, int d)
+  wrapped_file(std::string_view name, std::string_view url, int64_t length,
+               std::string_view mime, int d)
       : Name(name), URL(url), Length(length), MimeType(mime), depth(d) {}
 
   bool operator<(const wrapped_file &other) const {
@@ -100,32 +99,33 @@ static boost::json::value to_json(const wrapped_torrent &torrent) {
           {"Playlist", torrent.Playlist}};
 }
 
-static lt::add_torrent_params get_torrent_params(const std::string &id) {
+static lt::add_torrent_params get_torrent_params(std::string_view id) {
   lt::add_torrent_params params;
   lt::error_code ec;
 
   auto const pos = id.rfind(".");
-  std::string ext;
-  if (pos == std::string::npos)
-    ext = std::string{};
+  std::string_view ext;
+  if (pos == std::string_view::npos)
+    ext = std::string_view{};
   else
     ext = id.substr(pos);
 
   if (ext == ".fastresume") {
-    std::ifstream in(id, std::ios_base::binary);
+    std::ifstream in(std::string(id), std::ios_base::binary);
     std::vector<char> buf(std::istreambuf_iterator<char>(in), {});
     return lt::read_resume_data(buf, ec);
   }
 
-  params.ti = std::make_shared<lt::torrent_info>(id, ec);
+  params.ti = std::make_shared<lt::torrent_info>(std::string(id), ec);
   if (!ec)
     return params;
 
-  params = lt::parse_magnet_uri(id, ec);
+  params = lt::parse_magnet_uri(lt::string_view(id.data(), id.size()), ec);
   if (!ec)
     return params;
 
-  if (std::regex_search(id, std::regex("^([0-9a-fA-F]{40})$"))) {
+  static const std::regex infohash_regex("^([0-9a-fA-F]{40})$");
+  if (std::regex_search(id.begin(), id.end(), infohash_regex)) {
     lt::sha1_hash sha1;
     lt::aux::from_hex(id, sha1.data());
     params.info_hashes.v1 = sha1;
@@ -135,68 +135,68 @@ static lt::add_torrent_params get_torrent_params(const std::string &id) {
   return lt::add_torrent_params{};
 }
 
-static std::string mime_type(const std::string &path) {
-  static const std::unordered_map<std::string, std::string> mime_types = {
-      {".htm", "text/html"},
-      {".html", "text/html"},
-      {".php", "text/html"},
-      {".css", "text/css"},
-      {".txt", "text/plain"},
-      {".js", "application/javascript"},
-      {".json", "application/json"},
-      {".xml", "application/xml"},
+static std::string_view mime_type(std::string_view path) {
+  static const std::unordered_map<std::string_view, std::string_view>
+      mime_types = {{".htm", "text/html"},
+                    {".html", "text/html"},
+                    {".php", "text/html"},
+                    {".css", "text/css"},
+                    {".txt", "text/plain"},
+                    {".js", "application/javascript"},
+                    {".json", "application/json"},
+                    {".xml", "application/xml"},
 
-      {".png", "image/png"},
-      {".jpe", "image/jpeg"},
-      {".jpeg", "image/jpeg"},
-      {".jpg", "image/jpeg"},
-      {".gif", "image/gif"},
-      {".bmp", "image/bmp"},
-      {".ico", "image/vnd.microsoft.icon"},
-      {".tiff", "image/tiff"},
-      {".tif", "image/tiff"},
-      {".svg", "image/svg+xml"},
-      {".svgz", "image/svg+xml"},
+                    {".png", "image/png"},
+                    {".jpe", "image/jpeg"},
+                    {".jpeg", "image/jpeg"},
+                    {".jpg", "image/jpeg"},
+                    {".gif", "image/gif"},
+                    {".bmp", "image/bmp"},
+                    {".ico", "image/vnd.microsoft.icon"},
+                    {".tiff", "image/tiff"},
+                    {".tif", "image/tiff"},
+                    {".svg", "image/svg+xml"},
+                    {".svgz", "image/svg+xml"},
 
-      {".mp4", "video/mp4"},
-      {".mkv", "video/x-matroska"},
-      {".webm", "video/webm"},
-      {".ogv", "video/ogg"},
-      {".avi", "video/x-msvideo"},
-      {".mov", "video/quicktime"},
-      {".wmv", "video/x-ms-wmv"},
-      {".flv", "video/x-flv"},
-      {".mpeg", "video/mpeg"},
-      {".mpg", "video/mpeg"},
-      {".3gp", "video/3gpp"},
-      {".m4v", "video/x-m4v"},
-      {".ts", "video/mp2t"},
-      {".f4v", "video/x-f4v"},
-      {".rm", "application/vnd.rn-realmedia"},
-      {".rmvb", "application/vnd.rn-realmedia-vbr"},
+                    {".mp4", "video/mp4"},
+                    {".mkv", "video/x-matroska"},
+                    {".webm", "video/webm"},
+                    {".ogv", "video/ogg"},
+                    {".avi", "video/x-msvideo"},
+                    {".mov", "video/quicktime"},
+                    {".wmv", "video/x-ms-wmv"},
+                    {".flv", "video/x-flv"},
+                    {".mpeg", "video/mpeg"},
+                    {".mpg", "video/mpeg"},
+                    {".3gp", "video/3gpp"},
+                    {".m4v", "video/x-m4v"},
+                    {".ts", "video/mp2t"},
+                    {".f4v", "video/x-f4v"},
+                    {".rm", "application/vnd.rn-realmedia"},
+                    {".rmvb", "application/vnd.rn-realmedia-vbr"},
 
-      {".mp3", "audio/mpeg"},
-      {".aac", "audio/aac"},
-      {".wav", "audio/wav"},
-      {".flac", "audio/flac"},
-      {".ogg", "audio/ogg"},
-      {".m4a", "audio/mp4"},
-      {".wma", "audio/x-ms-wma"},
-      {".alac", "audio/alac"},
-      {".aiff", "audio/aiff"},
-      {".opus", "audio/opus"},
-      {".ape", "audio/ape"},
-      {".amr", "audio/amr"},
-      {".mid", "audio/midi"},
-      {".xmf", "audio/xmf"},
-      {".rtttl", "audio/x-rtttl"},
-      {".midi", "audio/midi"}};
+                    {".mp3", "audio/mpeg"},
+                    {".aac", "audio/aac"},
+                    {".wav", "audio/wav"},
+                    {".flac", "audio/flac"},
+                    {".ogg", "audio/ogg"},
+                    {".m4a", "audio/mp4"},
+                    {".wma", "audio/x-ms-wma"},
+                    {".alac", "audio/alac"},
+                    {".aiff", "audio/aiff"},
+                    {".opus", "audio/opus"},
+                    {".ape", "audio/ape"},
+                    {".amr", "audio/amr"},
+                    {".mid", "audio/midi"},
+                    {".xmf", "audio/xmf"},
+                    {".rtttl", "audio/x-rtttl"},
+                    {".midi", "audio/midi"}};
 
   auto const pos = path.rfind(".");
-  if (pos == std::string::npos)
+  if (pos == std::string_view::npos)
     return "application/octet-stream";
 
-  std::string ext = path.substr(pos);
+  std::string_view ext = path.substr(pos);
   auto it = mime_types.find(ext);
   if (it != mime_types.end()) {
     return it->second;
@@ -270,6 +270,7 @@ class http_session : public std::enable_shared_from_this<http_session> {
   stop_token &token_;
   tcp::endpoint ep_;
   std::shared_ptr<net::streambuf> buffer_;
+  std::string_view buf_;
 
 public:
   http_session(tcp::socket &&socket,
@@ -305,25 +306,34 @@ private:
     if (ec)
       return fail(ec, "read");
 
-    std::istream request_stream(buffer_.get());
-    std::string request_line;
-    std::getline(request_stream, request_line);
+    auto sequence = buffer_->data();
+    buf_ = std::string_view(static_cast<const char *>(sequence.data()),
+                            sequence.size());
 
-    // Extract the request line
+    auto line_end = buf_.find("\r\n");
+    std::string_view method_line = buf_.substr(0, line_end);
+
+    // Extract method and target
     request req{};
-    std::istringstream request_line_stream(request_line);
-    request_line_stream >> req.method >> req.target;
+    auto space_pos = method_line.find(' ');
+    req.method = method_line.substr(0, space_pos);
+    auto second_space = method_line.find(' ', space_pos + 1);
+    req.target =
+        method_line.substr(space_pos + 1, second_space - space_pos - 1);
 
-    // Parse headers
-    std::string header_line;
-    while (std::getline(request_stream, header_line) && header_line != "\r") {
-      auto delimiter_pos = header_line.find(":");
-      if (delimiter_pos != std::string::npos) {
-        std::string key = header_line.substr(0, delimiter_pos);
-        std::string value = header_line.substr(delimiter_pos + 1);
-        // Trim whitespace
-        boost::trim(key);
-        boost::trim(value);
+    auto tmp = buf_.substr(line_end + 2);
+    while (true) {
+      std::size_t pos = tmp.find("\r\n");
+      if (pos == std::string_view::npos)
+        break;
+
+      auto line = tmp.substr(0, pos);
+      tmp.remove_prefix(pos + 2);
+
+      auto delimiter_pos = line.find(":");
+      if (delimiter_pos != std::string_view::npos) {
+        std::string_view key = line.substr(0, delimiter_pos);
+        std::string_view value = line.substr(delimiter_pos + 2);
         req.headers[key] = value;
       }
     }
@@ -346,10 +356,11 @@ private:
 
   void do_write(const response &res) {
     std::string buf = "HTTP/1.1 " + std::to_string(res.status) + "\r\n";
-    for (auto &h : res.headers)
-      buf += h.first + ": " + h.second + "\r\n";
+    for (auto &[key, value] : res.headers)
+      buf += std::string(key) + ": " + std::string(value) + "\r\n";
 
-    buf += "\r\n" + res.content;
+    buf += "\r\n";
+    buf += res.content;
 
     net::async_write(
         socket_, net::buffer(buf),
@@ -462,9 +473,10 @@ private:
       return do_write(res);
     }
 
-    if (std::regex_search(req.target,
-                          std::regex("^/torrents/([0-9a-fA-F]{40})$"))) {
-      std::string info_hash = req.target.substr(10);
+    static const std::regex torrent_regex("^/torrents/([0-9a-fA-F]{40})$");
+    if (std::regex_search(req.target.begin(), req.target.end(),
+                          torrent_regex)) {
+      std::string_view info_hash = req.target.substr(10);
 
       lt::sha1_hash sha1;
       lt::aux::from_hex(info_hash, sha1.data());
@@ -481,34 +493,38 @@ private:
         return do_write(res);
       }
 
-      if (!handler_->wait_metadata(t)) {
-        std::string content = "Torrent not found";
-        res.status = 404;
-        res.headers["Content-Type"] = "text/plain";
-        res.headers["Content-Length"] = std::to_string(content.length());
-        if (req.method == "GET")
-          res.content = std::move(content);
+      handler_->wait_metadata(
+          t, [self = shared_from_this(), t, &res,
+              &req](std::shared_ptr<const lt::torrent_info> info) {
+            if (info == nullptr) {
+              std::string content = "Torrent not found";
+              res.status = 404;
+              res.headers["Content-Type"] = "text/plain";
+              res.headers["Content-Length"] = std::to_string(content.length());
+              if (req.method == "GET")
+                res.content = std::move(content);
 
-        return do_write(res);
-      }
+              return self->do_write(res);
+            }
 
-      std::string content = build_playlist(wrap_files(t.torrent_file()));
-      res.status = 200;
-      res.headers["Content-Type"] = "application/json";
-      res.headers["Content-Length"] = std::to_string(content.length());
-      if (req.method == "GET")
-        res.content = std::move(content);
+            std::string content = self->build_playlist(self->wrap_files(info));
+            res.status = 200;
+            res.headers["Content-Type"] = "application/json";
+            res.headers["Content-Length"] = std::to_string(content.length());
+            if (req.method == "GET")
+              res.content = std::move(content);
 
-      return do_write(res);
+            return self->do_write(res);
+          });
+      return;
     }
 
-    if (std::regex_search(req.target,
-                          std::regex("^/torrents/([0-9a-fA-F]{40})/(.+)$"))) {
-      std::stringstream decoded;
-      decoded << boost::urls::decode_view(req.target);
-
-      std::string info_hash = req.target.substr(10, 40);
-      boost::filesystem::path path = decoded.str().substr(51);
+    static const std::regex file_regex("^/torrents/([0-9a-fA-F]{40})/(.+)$");
+    if (std::regex_search(req.target.begin(), req.target.end(), file_regex)) {
+      boost::urls::decode_view decoded(req.target);
+      std::string_view info_hash = req.target.substr(10, 40);
+      boost::filesystem::path path =
+          std::string(decoded.begin(), decoded.end()).substr(51);
 
       lt::sha1_hash sha1;
       lt::aux::from_hex(info_hash, sha1.data());
@@ -525,89 +541,95 @@ private:
         return do_write(res);
       }
 
-      if (!handler_->wait_metadata(t)) {
-        std::string content = "Torrent not found";
-        res.status = 404;
-        res.headers["Content-Type"] = "text/plain";
-        res.headers["Content-Length"] = std::to_string(content.length());
-        if (req.method == "GET")
-          res.content = std::move(content);
+      handler_->wait_metadata(
+          t, [self = shared_from_this(), t, &res, &req,
+              path](std::shared_ptr<const lt::torrent_info> info) mutable {
+            if (info == nullptr) {
+              std::string content = "Torrent not found";
+              res.status = 404;
+              res.headers["Content-Type"] = "text/plain";
+              res.headers["Content-Length"] = std::to_string(content.length());
+              if (req.method == "GET")
+                res.content = std::move(content);
 
-        return do_write(res);
-      }
+              return self->do_write(res);
+            }
 
-      auto info = t.torrent_file();
-      lt::file_index_t file_index{-1};
-      lt::file_index_t file_count{info->num_files()};
-      for (lt::file_index_t i{0}; i < file_count; i++) {
-        if (info->files().file_path(i) == path.make_preferred()) {
-          file_index = i;
-          break;
-        }
-      }
+            lt::file_index_t file_index{-1};
+            lt::file_index_t file_count{info->num_files()};
+            for (lt::file_index_t i{0}; i < file_count; i++) {
+              if (info->files().file_path(i) == path.make_preferred()) {
+                file_index = i;
+                break;
+              }
+            }
 
-      if (file_index < lt::file_index_t(0)) {
-        std::string content = "File not found";
-        res.status = 404;
-        res.headers["Content-Type"] = "text/plain";
-        res.headers["Content-Length"] = std::to_string(content.length());
-        if (req.method == "GET")
-          res.content = std::move(content);
+            if (file_index < lt::file_index_t(0)) {
+              std::string content = "File not found";
+              res.status = 404;
+              res.headers["Content-Type"] = "text/plain";
+              res.headers["Content-Length"] = std::to_string(content.length());
+              if (req.method == "GET")
+                res.content = std::move(content);
 
-        return do_write(res);
-      }
+              return self->do_write(res);
+            }
 
-      int64_t size = info->files().file_size(file_index);
+            int64_t size = info->files().file_size(file_index);
 
-      range_parser::HTTPRange parsed;
-      auto field = req.headers.find("Range");
-      if (field == req.headers.end())
-        parsed = range_parser::parse("bytes=0-", size);
-      else
-        parsed = range_parser::parse(field->second, size);
+            range_parser::HTTPRange parsed;
+            auto field = req.headers.find("Range");
+            if (field == req.headers.end())
+              parsed = range_parser::parse("bytes=0-", size);
+            else
+              parsed = range_parser::parse(std::string(field->second), size);
 
-      range_parser::Range range = parsed.ranges.at(0);
+            range_parser::Range range = parsed.ranges.at(0);
 
-      std::string response;
-      response.reserve(256);
-      response += "HTTP/1.1 ";
-      response += (range.length < size ? "206" : "200");
-      response += "\r\nAccept-Ranges: bytes\r\nConnection: ";
-      response += (req.keep_alive ? "keep-alive" : "close");
-      response += "\r\nContent-Type: ";
-      response += mime_type(path.string());
-      response += "\r\nContent-Length: ";
-      response += std::to_string(range.length);
-      if (range.length < size) {
-        response += "\r\nContent-Range: ";
-        response += range.content_range(size);
-      }
-      response += "\r\n\r\n";
+            std::string response;
+            response.reserve(256);
+            response += "HTTP/1.1 ";
+            response += (range.length < size ? "206" : "200");
+            response += "\r\nAccept-Ranges: bytes\r\nConnection: ";
+            response += (req.keep_alive ? "keep-alive" : "close");
+            response += "\r\nContent-Type: ";
+            response += mime_type(path.string());
+            response += "\r\nContent-Length: ";
+            response += std::to_string(range.length);
+            if (range.length < size) {
+              response += "\r\nContent-Range: ";
+              response += range.content_range(size);
+            }
+            response += "\r\n\r\n";
 
-      boost::system::error_code ec;
-      std::size_t header_written =
-          net::write(socket_, net::buffer(response), ec);
+            boost::system::error_code ec;
+            std::size_t header_written =
+                net::write(self->socket_, net::buffer(response), ec);
 
-      if (req.method == "HEAD" || ec)
-        return on_write(ec, header_written, req.keep_alive);
+            if (req.method == "HEAD" || ec)
+              return self->on_write(ec, header_written, req.keep_alive);
 
-      lt::peer_request mappings = info->map_file(file_index, range.start, 0);
-      lt::peer_request end_mappings =
-          info->map_file(file_index, range.start + range.length, 0);
+            lt::peer_request mappings =
+                info->map_file(file_index, range.start, 0);
+            lt::peer_request end_mappings =
+                info->map_file(file_index, range.start + range.length, 0);
 
-      lt::piece_index_t start_piece = mappings.piece;
-      lt::piece_index_t end_piece{
-          std::min(int(end_mappings.piece), int(info->num_pieces() - 1))};
-      int64_t end_piece_size = info->files().piece_size(end_piece);
+            lt::piece_index_t start_piece = mappings.piece;
+            lt::piece_index_t end_piece{
+                std::min(int(end_mappings.piece), int(info->num_pieces() - 1))};
+            int64_t end_piece_size = info->files().piece_size(end_piece);
 
-      int start_offset = mappings.start;
-      int end_offset =
-          end_mappings.start > 0 ? end_piece_size - end_mappings.start : 0;
+            int start_offset = mappings.start;
+            int end_offset = end_mappings.start > 0
+                                 ? end_piece_size - end_mappings.start
+                                 : 0;
 
-      t.set_piece_deadline(start_piece, 5000);
+            t.set_piece_deadline(start_piece, 5000);
 
-      do_stream(t, start_piece, end_piece, start_piece, start_offset,
-                end_offset, res.keep_alive);
+            self->do_stream(t, start_piece, end_piece, start_piece,
+                            start_offset, end_offset, res.keep_alive);
+          });
+
       return;
     }
 
@@ -636,9 +658,7 @@ private:
   }
 
   void handle_post(const request &req) {
-    std::istream request_stream(buffer_.get());
-    std::string body((std::istreambuf_iterator<char>(request_stream)),
-                     std::istreambuf_iterator<char>());
+    std::string_view body = buf_.substr(buf_.find("\r\n\r\n") + 4);
     response res{};
     res.keep_alive = req.keep_alive;
     res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
@@ -671,24 +691,27 @@ private:
       }
     }
 
-    if (!handler_->wait_metadata(t)) {
-      std::string content = "Torrent not found";
-      res.status = 404;
-      res.headers["Content-Type"] = "text/plain";
-      res.headers["Content-Length"] = std::to_string(content.length());
-      if (req.method == "GET")
-        res.content = std::move(content);
+    handler_->wait_metadata(
+        t, [self = shared_from_this(), t,
+            &res](std::shared_ptr<const lt::torrent_info> info) {
+          if (info == nullptr) {
+            std::string content = "Torrent not found";
+            res.status = 404;
+            res.headers["Content-Type"] = "text/plain";
+            res.headers["Content-Length"] = std::to_string(content.length());
+            res.content = std::move(content);
 
-      return do_write(res);
-    }
+            return self->do_write(res);
+          }
+          std::string content = self->build_playlist(self->wrap_files(info));
+          res.status = 200;
+          res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
+          res.headers["Content-Length"] = std::to_string(content.length());
+          res.content = std::move(content);
 
-    std::string content = build_playlist(wrap_files(t.torrent_file()));
-    res.status = 200;
-    res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
-    res.headers["Content-Length"] = std::to_string(content.length());
-    res.content = std::move(content);
-
-    return do_write(res);
+          return self->do_write(res);
+        });
+    return;
   }
 
   void handle_delete(const request &req) {
@@ -696,9 +719,10 @@ private:
     res.keep_alive = req.keep_alive;
     res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
 
-    if (std::regex_search(req.target,
-                          std::regex("^/torrents/([0-9a-fA-F]{40})"))) {
-      std::string info_hash = req.target.substr(10, 40);
+    static const std::regex infohash_regex("^/torrents/([0-9a-fA-F]{40})");
+    if (std::regex_search(req.target.begin(), req.target.end(),
+                          infohash_regex)) {
+      std::string_view info_hash = req.target.substr(10, 40);
 
       lt::sha1_hash sha1;
       lt::aux::from_hex(info_hash, sha1.data());
@@ -892,11 +916,11 @@ int main(int argc, char **argv) {
   params.settings.set_int(lt::settings_pack::mixed_mode_algorithm,
                           lt::settings_pack::prefer_tcp);
   params.settings.set_int(lt::settings_pack::request_timeout, 10);
-  params.settings.set_int(lt::settings_pack::smooth_connects, false);
   params.settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
   params.settings.set_bool(lt::settings_pack::close_redundant_connections,
                            false);
   params.settings.set_bool(lt::settings_pack::no_atime_storage, true);
+  params.settings.set_bool(lt::settings_pack::smooth_connects, false);
   auto handler = std::make_shared<handler::alert_handler>(params, save_path);
 
   if (!fs::exists(resume_path))
