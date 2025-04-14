@@ -25,9 +25,9 @@ set(logging OFF)
 add_subdirectory("/home/andrei/Documents/repos/libtorrent" libtorrent)
 
 set(SOURCES
-    src/libtorrent_mpv.cpp
-    src/alert_handler.cpp
-    src/range_parser.cpp
+    "src/libtorrent_mpv.cpp"
+    "src/alert_handler.cpp"
+    "src/range_parser.cpp"
 )
 include_directories(include)
 add_executable(libtorrent_mpv ${SOURCES})
@@ -35,9 +35,5 @@ add_executable(libtorrent_mpv ${SOURCES})
 target_link_libraries(libtorrent_mpv
     PRIVATE
     torrent-rasterbar
-    Boost::system
-    Boost::filesystem
-    Boost::json
-    Boost::program_options
-    Boost::url
+    ${Boost_LIBRARIES}
 )
