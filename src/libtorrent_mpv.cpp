@@ -494,8 +494,8 @@ private:
       }
 
       handler_->wait_metadata(
-          t, [self = shared_from_this(), t, &res,
-              &req](std::shared_ptr<const lt::torrent_info> info) {
+          t, [self = shared_from_this(), t, res,
+              req](std::shared_ptr<const lt::torrent_info> info) mutable {
             if (info == nullptr) {
               std::string content = "Torrent not found";
               res.status = 404;
@@ -542,7 +542,7 @@ private:
       }
 
       handler_->wait_metadata(
-          t, [self = shared_from_this(), t, &res, &req,
+          t, [self = shared_from_this(), t, res, req,
               path](std::shared_ptr<const lt::torrent_info> info) mutable {
             if (info == nullptr) {
               std::string content = "Torrent not found";
@@ -693,7 +693,7 @@ private:
 
     handler_->wait_metadata(
         t, [self = shared_from_this(), t,
-            &res](std::shared_ptr<const lt::torrent_info> info) {
+            res](std::shared_ptr<const lt::torrent_info> info) mutable {
           if (info == nullptr) {
             std::string content = "Torrent not found";
             res.status = 404;
@@ -738,7 +738,7 @@ private:
         return do_write(res);
       }
 
-      if (req.target.find("?DeleteFiles=true") == std::string::npos)
+      if (req.target.find("?DeleteFiles=true") == std::string_view::npos)
         session_->remove_torrent(t);
       else
         session_->remove_torrent(t, lt::remove_flags_t{(unsigned char)(1U)});
@@ -816,11 +816,10 @@ private:
         if (path[c] == '/')
           depth++;
 
-      auto iter = files.emplace(
-          path.substr(pos),
-          "http://" + address + ":" + port + "/torrents/" +
-              lt::aux::to_hex(info->info_hashes().v1) + "/" + path,
-          info->files().file_size(i), mime_type(path), depth);
+      files.emplace(path.substr(pos),
+                    "http://" + address + ":" + port + "/torrents/" +
+                        lt::aux::to_hex(info->info_hashes().v1) + "/" + path,
+                    info->files().file_size(i), mime_type(path), depth);
     }
 
     return files;
