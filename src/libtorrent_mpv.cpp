@@ -268,7 +268,6 @@ class http_session : public std::enable_shared_from_this<http_session> {
   std::shared_ptr<lt::session> session_;
   std::shared_ptr<handler::alert_handler> handler_;
   stop_token &token_;
-  tcp::endpoint ep_;
   std::shared_ptr<net::streambuf> buffer_;
   std::string_view buf_;
 
@@ -277,13 +276,10 @@ public:
                std::shared_ptr<handler::alert_handler> handler,
                stop_token &token)
       : socket_(std::move(socket)), session_(handler->session),
-        handler_(handler), token_(token), ep_(socket_.remote_endpoint()) {
+        handler_(handler), token_(token) {
     socket_.set_option(net::socket_base::keep_alive(true));
     socket_.set_option(tcp::no_delay(true));
-    std::cerr << "HTTP session (" << ep_ << ")\n";
   }
-
-  ~http_session() { std::cerr << "HTTP session destroyed (" << ep_ << ")\n"; }
 
   void run() { do_read(); }
 
