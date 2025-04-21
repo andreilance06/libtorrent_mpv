@@ -620,7 +620,8 @@ private:
                                  ? end_piece_size - end_mappings.start
                                  : 0;
 
-            t.set_piece_deadline(start_piece, 5000);
+            if (!t.have_piece(start_piece))
+              t.set_piece_deadline(start_piece, 5000);
 
             self->do_stream(t, start_piece, end_piece, start_piece,
                             start_offset, end_offset, res.keep_alive);
