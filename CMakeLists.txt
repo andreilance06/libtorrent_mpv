@@ -32,6 +32,13 @@ set(SOURCES
 include_directories(include)
 add_executable(libtorrent_mpv ${SOURCES})
 
+target_compile_options(libtorrent_mpv
+    PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 target_link_libraries(libtorrent_mpv
     PRIVATE
     torrent-rasterbar
