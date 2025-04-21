@@ -1,3 +1,4 @@
+#include <boost/core/ignore_unused.hpp>
 #include <boost/filesystem.hpp>
 #include <fstream>
 #include <libtorrent/alert_types.hpp>
@@ -199,6 +200,7 @@ void alert_handler::handle_save_resume_data_alert(
 
 void alert_handler::handle_save_resume_data_failed_alert(
     lt::save_resume_data_failed_alert *a) {
+  boost::ignore_unused(a);
   if (outstanding_saves_)
     outstanding_saves_--;
 }
@@ -218,7 +220,7 @@ void alert_handler::schedule_piece(const lt::torrent_handle &t,
     return callback({});
 
   std::unique_lock<std::shared_mutex> l(piece_requests_mtx_);
-  auto entry = piece_requests_.emplace(t.info_hashes(), piece, callback);
+  piece_requests_.emplace(t.info_hashes(), piece, callback);
   l.unlock();
   if (t.have_piece(piece))
     t.read_piece(piece);
