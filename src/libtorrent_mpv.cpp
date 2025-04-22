@@ -47,7 +47,7 @@ struct request {
 };
 
 struct response {
-  int status;
+  std::string status;
   std::map<std::string_view, std::string_view> headers;
   std::string content;
   bool keep_alive;
@@ -351,7 +351,10 @@ private:
   }
 
   void do_write(const response &res) {
-    std::string buf = "HTTP/1.1 " + std::to_string(res.status) + "\r\n";
+    std::string buf = "HTTP/1.1 ";
+    buf += res.status;
+    buf += "\r\n";
+
     for (auto &[key, value] : res.headers)
       buf += std::string(key) + ": " + std::string(value) + "\r\n";
 
@@ -460,7 +463,7 @@ private:
       }
 
       std::string content = boost::json::serialize(torrents);
-      res.status = 200;
+      res.status = "200 OK";
       res.headers["Content-Type"] = "application/json";
       res.headers["Content-Length"] = std::to_string(content.length());
       if (req.method == "GET")
@@ -480,7 +483,7 @@ private:
 
       if (!t.is_valid()) {
         std::string content = "Torrent not found";
-        res.status = 404;
+        res.status = "404 Not Found";
         res.headers["Content-Type"] = "text/plain";
         res.headers["Content-Length"] = std::to_string(content.length());
         if (req.method == "GET")
@@ -494,7 +497,7 @@ private:
               req](std::shared_ptr<const lt::torrent_info> info) mutable {
             if (info == nullptr) {
               std::string content = "Torrent not found";
-              res.status = 404;
+              res.status = "404 Not Found";
               res.headers["Content-Type"] = "text/plain";
               res.headers["Content-Length"] = std::to_string(content.length());
               if (req.method == "GET")
@@ -504,7 +507,7 @@ private:
             }
 
             std::string content = self->build_playlist(self->wrap_files(info));
-            res.status = 200;
+            res.status = "200 OK";
             res.headers["Content-Type"] = "application/json";
             res.headers["Content-Length"] = std::to_string(content.length());
             if (req.method == "GET")
@@ -528,7 +531,7 @@ private:
 
       if (!t.is_valid()) {
         std::string content = "Torrent not found";
-        res.status = 404;
+        res.status = "404 Not Found";
         res.headers["Content-Type"] = "text/plain";
         res.headers["Content-Length"] = std::to_string(content.length());
         if (req.method == "GET")
@@ -542,7 +545,7 @@ private:
               path](std::shared_ptr<const lt::torrent_info> info) mutable {
             if (info == nullptr) {
               std::string content = "Torrent not found";
-              res.status = 404;
+              res.status = "404 Not Found";
               res.headers["Content-Type"] = "text/plain";
               res.headers["Content-Length"] = std::to_string(content.length());
               if (req.method == "GET")
@@ -562,7 +565,7 @@ private:
 
             if (file_index < lt::file_index_t(0)) {
               std::string content = "File not found";
-              res.status = 404;
+              res.status = "404 Not Found";
               res.headers["Content-Type"] = "text/plain";
               res.headers["Content-Length"] = std::to_string(content.length());
               if (req.method == "GET")
@@ -585,7 +588,8 @@ private:
             std::string response;
             response.reserve(256);
             response += "HTTP/1.1 ";
-            response += (range.length < size ? "206" : "200");
+            response +=
+                (range.length < size ? "206 Partial Content" : "200 OK");
             response += "\r\nAccept-Ranges: bytes\r\nConnection: ";
             response += (req.keep_alive ? "keep-alive" : "close");
             response += "\r\nContent-Type: ";
@@ -632,7 +636,7 @@ private:
 
     if (req.target == "/shutdown") {
       std::string content = "Server shutting down...";
-      res.status = 200;
+      res.status = "200 OK";
       res.keep_alive = false;
       res.headers["Connection"] = "close";
       res.headers["Content-Type"] = "text/plain";
@@ -645,7 +649,7 @@ private:
     }
 
     std::string content = "Forbidden";
-    res.status = 403;
+    res.status = "403 Forbidden";
     res.headers["Content-Type"] = "text/plain";
     res.headers["Content-Length"] = std::to_string(content.length());
     if (req.method == "GET")
@@ -662,7 +666,7 @@ private:
 
     if (req.target != "/torrents") {
       std::string content = "Forbidden";
-      res.status = 403;
+      res.status = "403 Forbidden";
       res.headers["Content-Type"] = "text/plain";
       res.headers["Content-Length"] = std::to_string(content.length());
       res.content = std::move(content);
@@ -679,7 +683,7 @@ private:
       t = session_->add_torrent(params, ec);
       if (ec) {
         std::string content = "Failed to add torrent " + ec.message();
-        res.status = 400;
+        res.status = "400 Bad Request";
         res.headers["Content-Type"] = "text/plain";
         res.headers["Content-Length"] = std::to_string(content.length());
         res.content = std::move(content);
@@ -693,7 +697,7 @@ private:
             res](std::shared_ptr<const lt::torrent_info> info) mutable {
           if (info == nullptr) {
             std::string content = "Torrent not found";
-            res.status = 404;
+            res.status = "404 Not Found";
             res.headers["Content-Type"] = "text/plain";
             res.headers["Content-Length"] = std::to_string(content.length());
             res.content = std::move(content);
@@ -701,7 +705,7 @@ private:
             return self->do_write(res);
           }
           std::string content = self->build_playlist(self->wrap_files(info));
-          res.status = 200;
+          res.status = "200 OK";
           res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
           res.headers["Content-Length"] = std::to_string(content.length());
           res.content = std::move(content);
@@ -727,7 +731,7 @@ private:
 
       if (!t.is_valid()) {
         std::string content = "Torrent not found";
-        res.status = 404;
+        res.status = "404 Not Found";
         res.headers["Content-Type"] = "text/plain";
         res.headers["Content-Length"] = std::to_string(content.length());
         res.content = std::move(content);
@@ -741,7 +745,7 @@ private:
         session_->remove_torrent(t, lt::remove_flags_t{(unsigned char)(1U)});
 
       std::string content = "Torrent successfully deleted";
-      res.status = 200;
+      res.status = "200 OK";
       res.headers["Content-Type"] = "text/plain";
       res.headers["Content-Length"] = std::to_string(content.length());
       res.content = std::move(content);
@@ -750,7 +754,7 @@ private:
     }
 
     std::string content = "Forbidden";
-    res.status = 403;
+    res.status = "403 Forbidden";
     res.headers["Content-Type"] = "text/plain";
     res.headers["Content-Length"] = std::to_string(content.length());
     res.content = std::move(content);
@@ -762,7 +766,7 @@ private:
     std::string content = "Method not allowed";
     response res{};
     res.keep_alive = req.keep_alive;
-    res.status = 405;
+    res.status = "405 Method Not Allowed";
     res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
     res.headers["Content-Type"] = "text/plain";
     res.headers["Content-Length"] = std::to_string(content.length());
