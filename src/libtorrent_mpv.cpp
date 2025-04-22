@@ -57,7 +57,7 @@ struct wrapped_file {
   std::string Name;
   std::string URL;
   int64_t Length;
-  std::string MimeType;
+  std::string_view MimeType;
   int depth;
 
   wrapped_file(std::string_view name, std::string_view url, int64_t length,
@@ -777,7 +777,7 @@ private:
 
     playlist.append("#EXTM3U\n");
     for (auto &f : wf) {
-      if (f.MimeType.find("video") == std::string::npos)
+      if (f.MimeType.find("video") == std::string_view::npos)
         continue;
       playlist.append("#EXTINF:0," + f.Name + "\n");
       playlist.append(f.URL + "\n");
