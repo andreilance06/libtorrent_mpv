@@ -28,6 +28,7 @@ set(SOURCES
     "src/libtorrent_mpv.cpp"
     "src/alert_handler.cpp"
     "src/range_parser.cpp"
+    "src/wrappers.cpp"
 )
 include_directories(include)
 add_executable(libtorrent_mpv ${SOURCES})

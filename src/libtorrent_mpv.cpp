@@ -1,9 +1,8 @@
 #include "alert_handler.hpp"
 #include "range_parser.hpp"
+#include "wrappers.hpp"
 #include <boost/asio.hpp>
-#include <boost/container/flat_set.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/json.hpp>
 #include <boost/program_options.hpp>
 #include <boost/url/decode_view.hpp>
 #include <fstream>
@@ -53,52 +52,6 @@ struct response {
   bool keep_alive;
 };
 
-struct wrapped_file {
-  std::string Name;
-  std::string URL;
-  int64_t Length;
-  std::string_view MimeType;
-  int depth;
-
-  wrapped_file(std::string_view name, std::string_view url, int64_t length,
-               std::string_view mime, int d)
-      : Name(name), URL(url), Length(length), MimeType(mime), depth(d) {}
-
-  bool operator<(const wrapped_file &other) const {
-    return std::tie(depth, Name, URL) <
-           std::tie(other.depth, other.Name, other.URL);
-  }
-};
-
-struct wrapped_torrent {
-  std::string Name;
-  std::string InfoHash;
-  boost::container::flat_set<wrapped_file> Files;
-  int64_t Length;
-  std::string Playlist;
-};
-
-static boost::json::value to_json(const wrapped_file &file) {
-  return {{"Name", file.Name},
-          {"URL", file.URL},
-          {"Length", file.Length},
-          {"MimeType", file.MimeType},
-          {"depth", file.depth}};
-}
-
-static boost::json::value to_json(const wrapped_torrent &torrent) {
-  boost::json::array files_json;
-  for (const wrapped_file &file : torrent.Files) {
-    files_json.push_back(to_json(file));
-  }
-
-  return {{"Name", torrent.Name},
-          {"InfoHash", torrent.InfoHash},
-          {"Files", files_json},
-          {"Length", torrent.Length},
-          {"Playlist", torrent.Playlist}};
-}
-
 static lt::add_torrent_params get_torrent_params(std::string_view id) {
   lt::add_torrent_params params;
   lt::error_code ec;
@@ -133,76 +86,6 @@ static lt::add_torrent_params get_torrent_params(std::string_view id) {
   }
 
   return lt::add_torrent_params{};
-}
-
-static std::string_view mime_type(std::string_view path) {
-  static const std::unordered_map<std::string_view, std::string_view>
-      mime_types = {{".htm", "text/html"},
-                    {".html", "text/html"},
-                    {".php", "text/html"},
-                    {".css", "text/css"},
-                    {".txt", "text/plain"},
-                    {".js", "application/javascript"},
-                    {".json", "application/json"},
-                    {".xml", "application/xml"},
-
-                    {".png", "image/png"},
-                    {".jpe", "image/jpeg"},
-                    {".jpeg", "image/jpeg"},
-                    {".jpg", "image/jpeg"},
-                    {".gif", "image/gif"},
-                    {".bmp", "image/bmp"},
-                    {".ico", "image/vnd.microsoft.icon"},
-                    {".tiff", "image/tiff"},
-                    {".tif", "image/tiff"},
-                    {".svg", "image/svg+xml"},
-                    {".svgz", "image/svg+xml"},
-
-                    {".mp4", "video/mp4"},
-                    {".mkv", "video/x-matroska"},
-                    {".webm", "video/webm"},
-                    {".ogv", "video/ogg"},
-                    {".avi", "video/x-msvideo"},
-                    {".mov", "video/quicktime"},
-                    {".wmv", "video/x-ms-wmv"},
-                    {".flv", "video/x-flv"},
-                    {".mpeg", "video/mpeg"},
-                    {".mpg", "video/mpeg"},
-                    {".3gp", "video/3gpp"},
-                    {".m4v", "video/x-m4v"},
-                    {".ts", "video/mp2t"},
-                    {".f4v", "video/x-f4v"},
-                    {".rm", "application/vnd.rn-realmedia"},
-                    {".rmvb", "application/vnd.rn-realmedia-vbr"},
-
-                    {".mp3", "audio/mpeg"},
-                    {".aac", "audio/aac"},
-                    {".wav", "audio/wav"},
-                    {".flac", "audio/flac"},
-                    {".ogg", "audio/ogg"},
-                    {".m4a", "audio/mp4"},
-                    {".wma", "audio/x-ms-wma"},
-                    {".alac", "audio/alac"},
-                    {".aiff", "audio/aiff"},
-                    {".opus", "audio/opus"},
-                    {".ape", "audio/ape"},
-                    {".amr", "audio/amr"},
-                    {".mid", "audio/midi"},
-                    {".xmf", "audio/xmf"},
-                    {".rtttl", "audio/x-rtttl"},
-                    {".midi", "audio/midi"}};
-
-  auto const pos = path.rfind(".");
-  if (pos == std::string_view::npos)
-    return "application/octet-stream";
-
-  std::string_view ext = path.substr(pos);
-  auto it = mime_types.find(ext);
-  if (it != mime_types.end()) {
-    return it->second;
-  }
-
-  return "application/octet-stream";
 }
 
 void fail(const boost::system::error_code &ec, char const *what) {
@@ -457,8 +340,9 @@ private:
         if (info == nullptr)
           continue;
 
-        wrapped_torrent wt = wrap_torrent(info);
-        boost::json::value data = to_json(wt);
+        auto wt = wrappers::wrap_torrent(info, getLocalIp(),
+                                         socket_.local_endpoint().port());
+        boost::json::value data = wrappers::to_json(wt);
         torrents.push_back(data);
       }
 
@@ -506,7 +390,8 @@ private:
               return self->do_write(res);
             }
 
-            std::string content = self->build_playlist(self->wrap_files(info));
+            std::string content = wrappers::build_playlist(wrappers::wrap_files(
+                info, getLocalIp(), self->socket_.local_endpoint().port()));
             res.status = "200 OK";
             res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
             res.headers["Content-Length"] = std::to_string(content.length());
@@ -593,7 +478,7 @@ private:
             response += "\r\nAccept-Ranges: bytes\r\nConnection: ";
             response += (req.keep_alive ? "keep-alive" : "close");
             response += "\r\nContent-Type: ";
-            response += mime_type(path.string());
+            response += wrappers::mime_type(path.string());
             response += "\r\nContent-Length: ";
             response += std::to_string(range.length);
             if (range.length < size) {
@@ -704,7 +589,8 @@ private:
 
             return self->do_write(res);
           }
-          std::string content = self->build_playlist(self->wrap_files(info));
+          std::string content = wrappers::build_playlist(wrappers::wrap_files(
+              info, getLocalIp(), self->socket_.local_endpoint().port()));
           res.status = "200 OK";
           res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
           res.headers["Content-Length"] = std::to_string(content.length());
@@ -773,57 +659,6 @@ private:
     res.content = std::move(content);
 
     return do_write(res);
-  }
-
-  std::string
-  build_playlist(const boost::container::flat_set<wrapped_file> &wf) {
-    std::string playlist;
-
-    playlist.append("#EXTM3U\n");
-    for (auto &f : wf) {
-      if (f.MimeType.find("video") == std::string_view::npos)
-        continue;
-      playlist.append("#EXTINF:0," + f.Name + "\n");
-      playlist.append(f.URL + "\n");
-    }
-
-    return playlist;
-  }
-
-  wrapped_torrent wrap_torrent(std::shared_ptr<const lt::torrent_info> info) {
-    boost::container::flat_set<wrapped_file> files = wrap_files(info);
-
-    return wrapped_torrent{info->name(),
-                           lt::aux::to_hex(info->info_hashes().v1), files,
-                           info->total_size(), build_playlist(files)};
-  }
-
-  boost::container::flat_set<wrapped_file>
-  wrap_files(std::shared_ptr<const lt::torrent_info> info) {
-    int n = info->num_files();
-
-    boost::container::flat_set<wrapped_file> files;
-
-    std::string address = getLocalIp();
-    std::string port = std::to_string(socket_.local_endpoint().port());
-
-    for (lt::file_index_t i{0}; i < lt::file_index_t(n); i++) {
-      std::string path = info->files().file_path(i);
-      std::replace(path.begin(), path.end(), '\\', '/');
-
-      std::size_t pos = path.rfind("/") + 1;
-      int depth = 0;
-      for (std::size_t c = 0; c < path.length(); c++)
-        if (path[c] == '/')
-          depth++;
-
-      files.emplace(path.substr(pos),
-                    "http://" + address + ":" + port + "/torrents/" +
-                        lt::aux::to_hex(info->info_hashes().v1) + "/" + path,
-                    info->files().file_size(i), mime_type(path), depth);
-    }
-
-    return files;
   }
 };
 
