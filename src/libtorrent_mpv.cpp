@@ -508,7 +508,7 @@ private:
 
             std::string content = self->build_playlist(self->wrap_files(info));
             res.status = "200 OK";
-            res.headers["Content-Type"] = "application/json";
+            res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
             res.headers["Content-Length"] = std::to_string(content.length());
             if (req.method == "GET")
               res.content = std::move(content);
