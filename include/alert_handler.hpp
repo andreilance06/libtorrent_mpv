@@ -1,5 +1,4 @@
-#ifndef ALERT_HANDLER
-#define ALERT_HANDLER
+#pragma once
 
 #include <boost/filesystem.hpp>
 #include <condition_variable>
@@ -47,8 +46,7 @@ struct torrent_request {
       std::function<void(std::shared_ptr<const lt::torrent_info>)> callback)
       : info_hash(info), callback(callback) {}
 
-  torrent_request(lt::info_hash_t info)
-      : info_hash(info) {}
+  torrent_request(lt::info_hash_t info) : info_hash(info) {}
 
   inline bool operator==(torrent_request const &rq) const {
     return rq.info_hash == info_hash;
@@ -59,14 +57,14 @@ struct torrent_request {
   }
 };
 
-namespace handler {
-class alert_handler {
+namespace alert_handler {
+class handler {
 
 public:
   std::shared_ptr<lt::session> session;
   boost::filesystem::path save_path;
 
-  alert_handler(lt::session_params params, boost::filesystem::path save_path);
+  handler(lt::session_params params, boost::filesystem::path save_path);
 
   void schedule_piece(const lt::torrent_handle &t,
                       lt::piece_index_t const piece,
@@ -112,6 +110,4 @@ private:
 
   void handle_torrent_finished_alert(lt::torrent_finished_alert *a);
 };
-} // namespace handler
-
-#endif
+} // namespace alert_handler
