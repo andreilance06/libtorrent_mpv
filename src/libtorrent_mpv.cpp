@@ -266,14 +266,14 @@ public:
 class http_session : public std::enable_shared_from_this<http_session> {
   tcp::socket socket_;
   std::shared_ptr<lt::session> session_;
-  std::shared_ptr<handler::alert_handler> handler_;
+  std::shared_ptr<alert_handler::handler> handler_;
   stop_token &token_;
   std::shared_ptr<net::streambuf> buffer_;
   std::string_view buf_;
 
 public:
   http_session(tcp::socket &&socket,
-               std::shared_ptr<handler::alert_handler> handler,
+               std::shared_ptr<alert_handler::handler> handler,
                stop_token &token)
       : socket_(std::move(socket)), session_(handler->session),
         handler_(handler), token_(token) {
@@ -830,13 +830,13 @@ private:
 class torrent_server {
   net::thread_pool::executor_type ex_;
   tcp::acceptor acceptor_;
-  std::shared_ptr<handler::alert_handler> handler_;
+  std::shared_ptr<alert_handler::handler> handler_;
   net::signal_set signals_;
   stop_token token_;
 
 public:
   torrent_server(net::thread_pool::executor_type ex, tcp::endpoint endpoint,
-                 std::shared_ptr<handler::alert_handler> handler)
+                 std::shared_ptr<alert_handler::handler> handler)
       : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
         signals_(ex, SIGINT, SIGTERM) {
     signals_.async_wait([this](boost::system::error_code ec, int) {
@@ -921,7 +921,7 @@ int main(int argc, char **argv) {
                            false);
   params.settings.set_bool(lt::settings_pack::no_atime_storage, true);
   params.settings.set_bool(lt::settings_pack::smooth_connects, false);
-  auto handler = std::make_shared<handler::alert_handler>(params, save_path);
+  auto handler = std::make_shared<alert_handler::handler>(params, save_path);
 
   if (!fs::exists(resume_path))
     fs::create_directory(resume_path);

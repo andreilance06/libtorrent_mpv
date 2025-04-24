@@ -13,11 +13,10 @@
 
 #include "alert_handler.hpp"
 
-using namespace handler;
+using namespace alert_handler;
 namespace fs = boost::filesystem;
 
-alert_handler::alert_handler(lt::session_params params,
-                             boost::filesystem::path save_path)
+handler::handler(lt::session_params params, boost::filesystem::path save_path)
     : session(std::make_shared<lt::session>(params)), save_path(save_path) {
 
   alert_thread_ = std::thread([this] {
@@ -39,7 +38,7 @@ alert_handler::alert_handler(lt::session_params params,
   });
 }
 
-void alert_handler::handle_alert(lt::alert *a) {
+void handler::handle_alert(lt::alert *a) {
 
   switch (a->type()) {
   case lt::read_piece_alert::alert_type:
@@ -73,7 +72,7 @@ void alert_handler::handle_alert(lt::alert *a) {
   }
 }
 
-void alert_handler::handle_read_piece_alert(lt::read_piece_alert *a) {
+void handler::handle_read_piece_alert(lt::read_piece_alert *a) {
 
   std::unique_lock<std::shared_mutex> l(piece_requests_mtx_);
 
@@ -90,7 +89,7 @@ void alert_handler::handle_read_piece_alert(lt::read_piece_alert *a) {
   l.unlock();
 }
 
-void alert_handler::handle_piece_finished_alert(lt::piece_finished_alert *a) {
+void handler::handle_piece_finished_alert(lt::piece_finished_alert *a) {
   lt::torrent_handle t = a->handle;
 
   std::shared_lock<std::shared_mutex> l(piece_requests_mtx_);
@@ -102,7 +101,7 @@ void alert_handler::handle_piece_finished_alert(lt::piece_finished_alert *a) {
   t.read_piece(a->piece_index);
 }
 
-void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
+void handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
   if (a->error)
     return;
 
@@ -127,8 +126,7 @@ void alert_handler::handle_add_torrent_alert(lt::add_torrent_alert *a) {
   t.save_resume_data(t.only_if_modified | t.save_info_dict);
 }
 
-void alert_handler::handle_metadata_received_alert(
-    lt::metadata_received_alert *a) {
+void handler::handle_metadata_received_alert(lt::metadata_received_alert *a) {
   lt::torrent_handle t = a->handle;
   auto info = t.torrent_file();
 
@@ -152,7 +150,7 @@ void alert_handler::handle_metadata_received_alert(
   t.prioritize_pieces(priorities);
 }
 
-void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
+void handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
   std::unique_lock<std::shared_mutex> l1(piece_requests_mtx_);
   piece_request search_key{a->info_hashes, lt::piece_index_t{0}};
   auto first = piece_requests_.lower_bound(search_key);
@@ -179,8 +177,7 @@ void alert_handler::handle_torrent_removed_alert(lt::torrent_removed_alert *a) {
              ec);
 }
 
-void alert_handler::handle_save_resume_data_alert(
-    lt::save_resume_data_alert *a) {
+void handler::handle_save_resume_data_alert(lt::save_resume_data_alert *a) {
   auto path = save_path / "resume_data" /
               (lt::aux::to_hex(a->handle.info_hashes().v1) + ".fastresume");
   auto tmp_path =
@@ -198,23 +195,22 @@ void alert_handler::handle_save_resume_data_alert(
     outstanding_saves_--;
 }
 
-void alert_handler::handle_save_resume_data_failed_alert(
+void handler::handle_save_resume_data_failed_alert(
     lt::save_resume_data_failed_alert *a) {
   boost::ignore_unused(a);
   if (outstanding_saves_)
     outstanding_saves_--;
 }
 
-void alert_handler::handle_torrent_finished_alert(
-    lt::torrent_finished_alert *a) {
+void handler::handle_torrent_finished_alert(lt::torrent_finished_alert *a) {
   lt::torrent_handle t = a->handle;
 
   t.save_resume_data(t.only_if_modified | t.save_info_dict);
 }
 
-void alert_handler::schedule_piece(const lt::torrent_handle &t,
-                                   lt::piece_index_t const piece,
-                                   std::function<void(piece_entry)> callback) {
+void handler::schedule_piece(const lt::torrent_handle &t,
+                             lt::piece_index_t const piece,
+                             std::function<void(piece_entry)> callback) {
 
   if (session == nullptr || !t.is_valid() || !t.in_session())
     return callback({});
@@ -226,7 +222,7 @@ void alert_handler::schedule_piece(const lt::torrent_handle &t,
     t.read_piece(piece);
 }
 
-void alert_handler::wait_metadata(
+void handler::wait_metadata(
     const lt::torrent_handle &t,
     std::function<void(std::shared_ptr<const lt::torrent_info>)> callback) {
   if (session == nullptr || !t.is_valid() || !t.in_session())
@@ -239,9 +235,9 @@ void alert_handler::wait_metadata(
   torrent_requests_.emplace(t.info_hashes(), callback);
 }
 
-void alert_handler::join() { alert_thread_.join(); }
+void handler::join() { alert_thread_.join(); }
 
-void alert_handler::stop() {
+void handler::stop() {
   std::unique_lock<std::shared_mutex> l1(piece_requests_mtx_);
   std::lock_guard<std::mutex> l2(torrent_requests_mtx_);
   for (auto &t : session->get_torrents()) {
