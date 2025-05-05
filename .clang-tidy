@@ -1,0 +1,12 @@
+{
+    "Checks": [
+        "boost-*",
+        "bugprone-*",
+        "cert-*",
+        "clang-analyzer-*",
+        "concurrency-*",
+        "cppcoreguidelines-*",
+        "performance-*",
+        "portability-*"
+    ]
+}

@@ -2,9 +2,9 @@
 #include "range_parser.hpp"
 #include "wrappers.hpp"
 #include <boost/asio.hpp>
-#include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
 #include <boost/url/decode_view.hpp>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <libtorrent/alert_types.hpp>
@@ -47,7 +47,7 @@ struct request {
 
 struct response {
   std::string status;
-  std::map<std::string_view, std::string_view> headers;
+  std::map<std::string_view, std::string> headers;
   std::string content;
   bool keep_alive;
 };
@@ -151,7 +151,7 @@ class http_session : public std::enable_shared_from_this<http_session> {
   std::shared_ptr<lt::session> session_;
   std::shared_ptr<alert_handler::handler> handler_;
   stop_token &token_;
-  std::shared_ptr<net::streambuf> buffer_;
+  net::streambuf buffer_;
   std::string_view buf_;
 
 public:
@@ -168,9 +168,9 @@ public:
 
 private:
   void do_read() {
-    buffer_.reset(new net::streambuf());
+    buffer_.consume(buffer_.size());
     net::async_read_until(
-        socket_, *buffer_, "\r\n\r\n",
+        socket_, buffer_, "\r\n\r\n",
         [self = shared_from_this()](const boost::system::error_code &ec,
                                     std::size_t bytes_read) {
           self->on_read(ec, bytes_read);
@@ -185,7 +185,7 @@ private:
     if (ec)
       return fail(ec, "read");
 
-    auto sequence = buffer_->data();
+    auto sequence = buffer_.data();
     buf_ = std::string_view(static_cast<const char *>(sequence.data()),
                             sequence.size());
 
@@ -407,7 +407,7 @@ private:
     if (std::regex_search(req.target.begin(), req.target.end(), file_regex)) {
       boost::urls::decode_view decoded(req.target);
       std::string_view info_hash = req.target.substr(10, 40);
-      boost::filesystem::path path =
+      std::filesystem::path path =
           std::string(decoded.begin(), decoded.end()).substr(51);
 
       lt::sha1_hash sha1;
@@ -670,7 +670,8 @@ class torrent_server {
   stop_token token_;
 
 public:
-  torrent_server(net::thread_pool::executor_type ex, tcp::endpoint endpoint,
+  torrent_server(const net::thread_pool::executor_type &ex,
+                 const tcp::endpoint &endpoint,
                  std::shared_ptr<alert_handler::handler> handler)
       : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
         signals_(ex, SIGINT, SIGTERM) {
@@ -710,14 +711,14 @@ private:
 int main(int argc, char **argv) {
 
   namespace po = boost::program_options;
-  namespace fs = boost::filesystem;
+  namespace fs = std::filesystem;
 
   po::options_description desc("Allowed options");
   desc.add_options()("help", "produce help")(
       "address", po::value<std::string>()->default_value("0.0.0.0"),
       "HTTP server address")("port", po::value<uint16_t>()->default_value(1337),
                              "HTTP server port")(
-      "save-path", po::value<fs::path>()->default_value("."),
+      "save-path", po::value<fs::path>()->default_value(""),
       "Directory where downloaded files are stored");
 
   po::variables_map vm;

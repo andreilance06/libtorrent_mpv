@@ -1,5 +1,5 @@
 #include <boost/core/ignore_unused.hpp>
-#include <boost/filesystem.hpp>
+#include <filesystem>
 #include <fstream>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/hex.hpp>
@@ -10,14 +10,16 @@
 #include <thread>
 
 #include <iostream>
+#include <utility>
 
 #include "alert_handler.hpp"
 
 using namespace alert_handler;
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
-handler::handler(lt::session_params params, boost::filesystem::path save_path)
-    : session(std::make_shared<lt::session>(params)), save_path(save_path) {
+handler::handler(lt::session_params params, fs::path save_path)
+    : session(std::make_shared<lt::session>(params)),
+      save_path(std::move(save_path)) {
 
   alert_thread_ = std::thread([this] {
     auto temp_ptr = session;

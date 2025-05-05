@@ -1,13 +1,12 @@
 #pragma once
 
-#include <boost/filesystem.hpp>
-#include <condition_variable>
-#include <future>
+#include <filesystem>
 #include <libtorrent/alert_types.hpp>
 #include <libtorrent/hex.hpp>
 #include <libtorrent/session.hpp>
 #include <mutex>
 #include <shared_mutex>
+#include <utility>
 
 struct piece_entry {
   lt::piece_index_t piece;
@@ -22,7 +21,7 @@ struct piece_request {
 
   piece_request(lt::info_hash_t info, lt::piece_index_t p,
                 std::function<void(piece_entry)> callback)
-      : info_hash(info), piece(p), callback(callback) {}
+      : info_hash(info), piece(p), callback(std::move(callback)) {}
 
   piece_request(lt::info_hash_t info, lt::piece_index_t p)
       : info_hash(info), piece(p) {}
@@ -62,9 +61,9 @@ class handler {
 
 public:
   std::shared_ptr<lt::session> session;
-  boost::filesystem::path save_path;
+  std::filesystem::path save_path;
 
-  handler(lt::session_params params, boost::filesystem::path save_path);
+  handler(lt::session_params params, std::filesystem::path save_path);
 
   void schedule_piece(const lt::torrent_handle &t,
                       lt::piece_index_t const piece,
