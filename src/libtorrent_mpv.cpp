@@ -56,7 +56,7 @@ static lt::add_torrent_params get_torrent_params(std::string_view id) {
   lt::add_torrent_params params;
   lt::error_code ec;
 
-  auto const pos = id.rfind(".");
+  auto const pos = id.rfind('.');
   std::string_view ext;
   if (pos == std::string_view::npos)
     ext = std::string_view{};
@@ -209,7 +209,7 @@ private:
       auto line = tmp.substr(0, pos);
       tmp.remove_prefix(pos + 2);
 
-      auto delimiter_pos = line.find(":");
+      auto delimiter_pos = line.find(':');
       if (delimiter_pos != std::string_view::npos) {
         std::string_view key = line.substr(0, delimiter_pos);
         std::string_view value = line.substr(delimiter_pos + 2);
