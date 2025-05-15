@@ -317,7 +317,7 @@ private:
         end_piece);
     for (lt::piece_index_t future_piece{int(piece) + 1};
          future_piece <= buffer_pieces; future_piece++) {
-      if (t.have_piece(future_piece))
+      if (!t.is_valid() || t.have_piece(future_piece))
         continue;
       t.set_piece_deadline(future_piece, int(future_piece - piece) * 5000);
     }
