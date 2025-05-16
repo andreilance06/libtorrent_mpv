@@ -5,50 +5,19 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "(gdb) Launch Release",
+            "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/gcc-14/release/crypto-built-in/link-static/threadapi-win32/libtorrent_mpv.exe",
+            "program": "${workspaceFolder}/build/libtorrent_mpv",
             "args": [
-                "0.0.0.0",
-                "8080",
-                "8"
+                "--save-path=/home/andrei/Downloads/TORRENTS",
+                "--port=6969"
             ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
             "externalConsole": false,
             "MIMode": "gdb",
-            "miDebuggerPath": "C:/mingw64/bin/gdb.exe",
-            "setupCommands": [
-                {
-                    "description": "Enable pretty-printing for gdb",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
-                },
-                {
-                    "description": "Set Disassembly Flavor to Intel",
-                    "text": "-gdb-set disassembly-flavor intel",
-                    "ignoreFailures": true
-                }
-            ]
-        },
-        {
-            "name": "(gdb) Launch Debug",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "${workspaceFolder}/bin/gcc-14/debug/crypto-built-in/link-static/threadapi-win32/libtorrent_mpv.exe",
-            "args": [
-                "0.0.0.0",
-                "8080",
-                "8"
-            ],
-            "stopAtEntry": false,
-            "cwd": "${fileDirname}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "miDebuggerPath": "C:/mingw64/bin/gdb.exe",
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
