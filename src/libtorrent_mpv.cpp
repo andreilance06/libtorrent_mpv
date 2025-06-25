@@ -22,22 +22,6 @@
 namespace net = boost::asio;
 using boost::asio::ip::tcp;
 
-std::string getLocalIp() {
-  char host[256];
-  if (gethostname(host, sizeof(host)) != 0)
-    return "";
-
-  struct hostent *he = gethostbyname(host);
-  if (he == nullptr)
-    return "";
-
-  struct in_addr **addr_list = (struct in_addr **)he->h_addr_list;
-  if (addr_list[0] != nullptr)
-    return inet_ntoa(*addr_list[0]); // Return the first IP address found
-
-  return "";
-}
-
 struct request {
   std::string_view method;
   std::string_view target;
@@ -190,6 +174,14 @@ private:
                             sequence.size());
 
     auto line_end = buf_.find("\r\n");
+    if (line_end == std::string_view::npos) {
+      response res;
+      res.status = "400 Bad Request";
+      res.headers["Content-Type"] = "text/plain";
+      res.content = "Malformed HTTP request";
+      res.keep_alive = false;
+      return do_write(res);
+    }
     std::string_view method_line = buf_.substr(0, line_end);
 
     // Extract method and target
@@ -340,8 +332,7 @@ private:
         if (info == nullptr)
           continue;
 
-        auto wt = wrappers::wrap_torrent(info, getLocalIp(),
-                                         socket_.local_endpoint().port());
+        auto wt = wrappers::wrap_torrent(info);
         boost::json::value data = wrappers::to_json(wt);
         torrents.push_back(data);
       }
@@ -390,8 +381,8 @@ private:
               return self->do_write(res);
             }
 
-            std::string content = wrappers::build_playlist(wrappers::wrap_files(
-                info, getLocalIp(), self->socket_.local_endpoint().port()));
+            std::string content =
+                wrappers::build_playlist(wrappers::wrap_files(info));
             res.status = "200 OK";
             res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
             res.headers["Content-Length"] = std::to_string(content.length());
@@ -589,8 +580,8 @@ private:
 
             return self->do_write(res);
           }
-          std::string content = wrappers::build_playlist(wrappers::wrap_files(
-              info, getLocalIp(), self->socket_.local_endpoint().port()));
+          std::string content =
+              wrappers::build_playlist(wrappers::wrap_files(info));
           res.status = "200 OK";
           res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
           res.headers["Content-Length"] = std::to_string(content.length());
@@ -753,8 +744,9 @@ int main(int argc, char **argv) {
                           lt::settings_pack::prefer_tcp);
   params.settings.set_int(lt::settings_pack::request_timeout, 10);
   params.settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
-  params.settings.set_bool(lt::settings_pack::close_redundant_connections,
-                           false);
+  params.settings.set_int(lt::settings_pack::unchoke_slots_limit, -1);
+  // params.settings.set_bool(lt::settings_pack::close_redundant_connections,
+  //                          false);
   params.settings.set_bool(lt::settings_pack::no_atime_storage, true);
   params.settings.set_bool(lt::settings_pack::smooth_connects, false);
   auto handler = std::make_shared<alert_handler::handler>(params, save_path);

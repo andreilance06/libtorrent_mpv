@@ -124,17 +124,17 @@ function Menu.create_torrent_menu(menu_id, index)
       if #media_files > 1 then
         table.insert(play_torrent_items, Menu.new_prop({
           title = "Play all",
-          value = v.Playlist,
+          value = v.InfoHash,
           actions = {
             { name = "play_all",        icon = "playlist_play", label = "Play all files" },
             { name = "play_all_append", icon = "playlist_add",  label = "Append all files to playlist" }
           }
         }, function(event)
           if event.action == "play_all" then
-            mp.commandv("loadfile", "memory://" .. event.value)
+            mp.commandv("loadfile", event.value)
             mp.commandv("script-message-to", "uosc", "close-menu", "torrent_menu")
           elseif event.action == "play_all_append" then
-            mp.commandv("loadfile", "memory://" .. event.value, "append")
+            mp.commandv("loadfile", event.value, "append")
             local item, done = Menu.update(event.menu_id, event.index)
             item.actions[2].name = "noop"
             item.actions[2].icon = "check"
@@ -147,11 +147,12 @@ function Menu.create_torrent_menu(menu_id, index)
       end
 
       for _, file in pairs(media_files) do
+        local URL = "http://127.0.0.1:" .. Config.opts.port .. "/torrents/" .. file.Path
         table.insert(play_torrent_items, Menu.new_prop({
           title = file.Name,
           hint = string.format("%.1f MB", file.Length / (1024 * 1024)),
-          active = mp.get_property("stream-open-filename", "") == file.URL and true or false,
-          value = file.URL,
+          active = URL == mp.get_property("stream-open-filename", ""),
+          value = URL,
           actions = {
             { name = "play_file",   icon = "play_circle_outline", label = "Play file" },
             { name = "play_append", icon = "add_to_queue",        label = "Queue" },

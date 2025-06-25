@@ -10,7 +10,7 @@ local Menu = require("lib/menu")
 
 -- Constants
 local TORRENT_PATTERNS = { "%.torrent$", "^magnet:%?xt=urn:btih:", "^" .. string.rep("%x", 40) .. "$" }
-local EXCLUDE_PATTERNS = { "127%.0%.0%.1", "192%.168%.%d+%.%d+", "/torrents/" }
+local EXCLUDE_PATTERNS = { "127%.0%.0%.1", "/torrents/" }
 
 -- Event handlers
 local function on_file_loaded()
@@ -23,10 +23,10 @@ local function on_file_loaded()
   for _, pattern in ipairs(TORRENT_PATTERNS) do
     if path:find(pattern) then
       if Client.start() then
-        local playlist = Client.add(path)
-        if playlist then
+        local infohash = Client.add(path)
+        if infohash then
           State.update()
-          mp.set_property("stream-open-filename", "memory://" .. playlist)
+          mp.set_property("stream-open-filename", "http://127.0.0.1:" .. Config.opts.port .. "/torrents/" .. infohash)
           return
         end
       end

@@ -75,7 +75,7 @@ std::string_view mime_type(std::string_view path) {
 
 boost::json::value to_json(const wrappers::wrapped_file &file) {
   return {{"Name", file.Name},
-          {"URL", file.URL},
+          {"Path", file.Path},
           {"Length", file.Length},
           {"MimeType", file.MimeType},
           {"depth", file.depth}};
@@ -90,17 +90,14 @@ boost::json::value to_json(const wrappers::wrapped_torrent &torrent) {
   return {{"Name", torrent.Name},
           {"InfoHash", torrent.InfoHash},
           {"Files", files_json},
-          {"Length", torrent.Length},
-          {"Playlist", torrent.Playlist}};
+          {"Length", torrent.Length}};
 }
 
 boost::container::flat_set<wrappers::wrapped_file>
-wrap_files(std::shared_ptr<const lt::torrent_info> info,
-           const std::string &address, uint16_t port) {
+wrap_files(std::shared_ptr<const lt::torrent_info> info) {
 
   int n = info->num_files();
   boost::container::flat_set<wrappers::wrapped_file> files;
-  std::string port_str = std::to_string(port);
 
   for (lt::file_index_t i{0}; i < lt::file_index_t(n); i++) {
     std::string path = info->files().file_path(i);
@@ -113,8 +110,7 @@ wrap_files(std::shared_ptr<const lt::torrent_info> info,
         depth++;
 
     files.emplace(path.substr(pos),
-                  "http://" + address + ":" + port_str + "/torrents/" +
-                      lt::aux::to_hex(info->info_hashes().v1) + "/" + path,
+                  lt::aux::to_hex(info->info_hashes().v1) + "/" + path,
                   info->files().file_size(i), mime_type(path), depth);
   }
 
@@ -122,15 +118,13 @@ wrap_files(std::shared_ptr<const lt::torrent_info> info,
 }
 
 wrappers::wrapped_torrent
-wrap_torrent(std::shared_ptr<const lt::torrent_info> info,
-             const std::string &address, uint16_t port) {
+wrap_torrent(std::shared_ptr<const lt::torrent_info> info) {
 
-  boost::container::flat_set<wrappers::wrapped_file> files =
-      wrap_files(info, address, port);
+  boost::container::flat_set<wrappers::wrapped_file> files = wrap_files(info);
 
-  return wrappers::wrapped_torrent{
-      info->name(), lt::aux::to_hex(info->info_hashes().v1), files,
-      info->total_size(), wrappers::build_playlist(files)};
+  return wrappers::wrapped_torrent{info->name(),
+                                   lt::aux::to_hex(info->info_hashes().v1),
+                                   files, info->total_size()};
 }
 
 std::string build_playlist(
@@ -142,7 +136,7 @@ std::string build_playlist(
     if (f.MimeType.find("video") == std::string_view::npos)
       continue;
     playlist.append("#EXTINF:0," + f.Name + "\n");
-    playlist.append(f.URL + "\n");
+    playlist.append(f.Path + "\n");
   }
 
   return playlist;

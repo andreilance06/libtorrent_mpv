@@ -84,13 +84,14 @@ function Client.add(torrent_url)
       torrent_url, "127.0.0.1:" .. Config.opts.port .. "/torrents" }
   })
 
-  local playlist = cmd.stdout
-  if cmd.status ~= 0 or not playlist or #playlist == 0 then
-    msg.debug("Unable to get playlist for", torrent_url)
+  local stdout = cmd.stdout or ""
+  local infohash = stdout:match(string.rep("%x", 40))
+  if cmd.status ~= 0 or not infohash or #infohash == 0 then
+    msg.debug("Unable to get infohash for", torrent_url)
     return nil
   end
 
-  return playlist
+  return infohash
 end
 
 function Client.remove(info_hash, delete_files)
