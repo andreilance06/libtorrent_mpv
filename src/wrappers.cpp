@@ -1,4 +1,5 @@
 #include "wrappers.hpp"
+#include <boost/range/algorithm/replace.hpp>
 #include <libtorrent/hex.hpp>
 
 namespace wrappers {
@@ -59,7 +60,7 @@ std::string_view mime_type(std::string_view path) {
                     {".rtttl", "audio/x-rtttl"},
                     {".midi", "audio/midi"}};
 
-  auto const pos = path.rfind(".");
+  auto const pos = path.rfind('.');
   if (pos == std::string_view::npos)
     return "application/octet-stream";
 
@@ -103,9 +104,9 @@ wrap_files(std::shared_ptr<const lt::torrent_info> info,
 
   for (lt::file_index_t i{0}; i < lt::file_index_t(n); i++) {
     std::string path = info->files().file_path(i);
-    std::replace(path.begin(), path.end(), '\\', '/');
+    boost::range::replace(path, '\\', '/');
 
-    std::size_t pos = path.rfind("/") + 1;
+    std::size_t pos = path.rfind('/') + 1;
     int depth = 0;
     for (std::size_t c = 0; c < path.length(); c++)
       if (path[c] == '/')
