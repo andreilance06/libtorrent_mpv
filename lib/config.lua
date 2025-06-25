@@ -5,7 +5,7 @@ local Config = {
   opts = {
     address = "0.0.0.0",
     port = 1337,
-    ["save-path"] = os.getenv("tmp"),
+    ["save-path"] = PLATFORM == "windows" and os.getenv("tmp") or PLATFORM == "linux" and "/tmp",
     StartClientOnMpvLaunch = true,
     -- CloseClientOnMpvExit = true,
     -- CloseClientOnNoTorrentFiles = false

@@ -1,6 +1,8 @@
 -- Utils
 local options = require("mp.options")
 
+PLATFORM = mp.get_property("platform", "")
+
 local Config = require("lib/config")
 local State = require("lib/state")
 local Client = require("lib/client")

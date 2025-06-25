@@ -5,6 +5,14 @@ local State = require("lib/state")
 
 local Client = {}
 
+local unpack = unpack or table.unpack -- For compatibility with Lua 5.1
+local exe
+if PLATFORM == "windows" then
+  exe = "libtorrent_mpv.exe"
+else
+  exe = "libtorrent_mpv"
+end
+
 function Client.start()
   if State.client_running then
     return true
@@ -19,8 +27,8 @@ function Client.start()
   local cmd = mp.command_native({
     name = "subprocess",
     playback_only = false,
-    capture_stderr = true,
-    args = { mp.get_script_directory() .. "/libtorrent_mpv.exe", table.unpack(Config.get_client_args()) },
+    -- capture_stderr = true,
+    args = { mp.get_script_directory() .. '/' .. exe, unpack(Config.get_client_args()) },
     detach = true
   })
 
