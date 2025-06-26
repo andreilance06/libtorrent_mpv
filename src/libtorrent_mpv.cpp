@@ -1,7 +1,8 @@
 #include "alert_handler.hpp"
+#include "libusockets.h"
 #include "range_parser.hpp"
 #include "wrappers.hpp"
-#include <boost/asio.hpp>
+#include <App.h>
 #include <boost/program_options.hpp>
 #include <boost/url/decode_view.hpp>
 #include <filesystem>
@@ -17,24 +18,6 @@
 #include <regex>
 #include <string>
 #include <string_view>
-#include <thread>
-
-namespace net = boost::asio;
-using boost::asio::ip::tcp;
-
-struct request {
-  std::string_view method;
-  std::string_view target;
-  std::map<std::string_view, std::string_view> headers;
-  bool keep_alive;
-};
-
-struct response {
-  std::string status;
-  std::map<std::string_view, std::string> headers;
-  std::string content;
-  bool keep_alive;
-};
 
 static lt::add_torrent_params get_torrent_params(std::string_view id) {
   lt::add_torrent_params params;
@@ -72,635 +55,7 @@ static lt::add_torrent_params get_torrent_params(std::string_view id) {
   return lt::add_torrent_params{};
 }
 
-void fail(const boost::system::error_code &ec, char const *what) {
-  std::cerr << what << ": " << ec.message() << "\n";
-}
-
-class stop_token {
-  std::atomic<bool> stop_{false};
-  mutable std::mutex callback_mtx_;
-  std::map<std::size_t, std::function<void()>> callbacks_;
-  std::condition_variable cv;
-  std::size_t next_callback_id_ = 0; // Unique ID for each callback
-
-public:
-  stop_token() = default;
-
-  // Request stop and invoke callbacks
-  void request_stop() {
-    std::lock_guard<std::mutex> lock(callback_mtx_);
-    if (stop_.exchange(true)) {
-      return; // Stop already requested
-    }
-    for (const auto &entry : callbacks_) {
-      if (entry.second) {
-        entry.second();
-      }
-    }
-    cv.notify_all();
-  }
-
-  // Check if stop is requested
-  bool stop_requested() const { return stop_.load(); }
-
-  // Register a callback, returns a unique ID
-  std::size_t add_callback(std::function<void()> &&callback) {
-    std::lock_guard<std::mutex> lock(callback_mtx_);
-    if (stop_.load()) {
-      callback();
-      return 0; // Callback executed immediately, no ID needed
-    } else {
-      std::size_t id = next_callback_id_++;
-      callbacks_[id] = std::move(callback);
-      return id;
-    }
-  }
-
-  // Remove a callback by its ID
-  void remove_callback(std::size_t id) {
-    std::lock_guard<std::mutex> lock(callback_mtx_);
-    callbacks_.erase(id);
-  }
-
-  void wait_stop() {
-    std::unique_lock<std::mutex> lock(callback_mtx_);
-    if (stop_.load())
-      return;
-    cv.wait(lock);
-  }
-};
-
-class http_session : public std::enable_shared_from_this<http_session> {
-  tcp::socket socket_;
-  std::shared_ptr<lt::session> session_;
-  std::shared_ptr<alert_handler::handler> handler_;
-  stop_token &token_;
-  net::streambuf buffer_;
-  std::string_view buf_;
-
-public:
-  http_session(tcp::socket &&socket,
-               std::shared_ptr<alert_handler::handler> handler,
-               stop_token &token)
-      : socket_(std::move(socket)), session_(handler->session),
-        handler_(handler), token_(token) {
-    socket_.set_option(net::socket_base::keep_alive(true));
-    socket_.set_option(tcp::no_delay(true));
-  }
-
-  void run() { do_read(); }
-
-private:
-  void do_read() {
-    buffer_.consume(buffer_.size());
-    net::async_read_until(
-        socket_, buffer_, "\r\n\r\n",
-        [self = shared_from_this()](const boost::system::error_code &ec,
-                                    std::size_t bytes_read) {
-          self->on_read(ec, bytes_read);
-        });
-  }
-
-  void on_read(const boost::system::error_code &ec, std::size_t) {
-
-    if (ec == net::error::eof)
-      return do_close();
-
-    if (ec)
-      return fail(ec, "read");
-
-    auto sequence = buffer_.data();
-    buf_ = std::string_view(static_cast<const char *>(sequence.data()),
-                            sequence.size());
-
-    auto line_end = buf_.find("\r\n");
-    if (line_end == std::string_view::npos) {
-      response res;
-      res.status = "400 Bad Request";
-      res.headers["Content-Type"] = "text/plain";
-      res.content = "Malformed HTTP request";
-      res.keep_alive = false;
-      return do_write(res);
-    }
-    std::string_view method_line = buf_.substr(0, line_end);
-
-    // Extract method and target
-    request req{};
-    auto space_pos = method_line.find(' ');
-    req.method = method_line.substr(0, space_pos);
-    auto second_space = method_line.find(' ', space_pos + 1);
-    req.target =
-        method_line.substr(space_pos + 1, second_space - space_pos - 1);
-
-    auto tmp = buf_.substr(line_end + 2);
-    while (true) {
-      std::size_t pos = tmp.find("\r\n");
-      if (pos == std::string_view::npos)
-        break;
-
-      auto line = tmp.substr(0, pos);
-      tmp.remove_prefix(pos + 2);
-
-      auto delimiter_pos = line.find(':');
-      if (delimiter_pos != std::string_view::npos) {
-        std::string_view key = line.substr(0, delimiter_pos);
-        std::string_view value = line.substr(delimiter_pos + 2);
-        req.headers[key] = value;
-      }
-    }
-
-    if (!req.headers.count("Connection"))
-      req.keep_alive = true;
-    else
-      req.keep_alive = req.headers["Connection"] == "keep-alive";
-
-    // Handle the request based on the method
-    if (req.method == "GET" || req.method == "HEAD")
-      handle_get(req);
-    else if (req.method == "POST")
-      handle_post(req);
-    else if (req.method == "DELETE")
-      handle_delete(req);
-    else
-      handle_no_method(req);
-  }
-
-  void do_write(const response &res) {
-    std::string buf = "HTTP/1.1 ";
-    buf += res.status;
-    buf += "\r\n";
-
-    for (auto &[key, value] : res.headers)
-      buf += std::string(key) + ": " + std::string(value) + "\r\n";
-
-    buf += "\r\n";
-    buf += res.content;
-
-    net::async_write(
-        socket_, net::buffer(buf),
-        [self = shared_from_this(), keep_alive = res.keep_alive](
-            const boost::system::error_code &ec, std::size_t written) {
-          self->on_write(ec, written, keep_alive);
-        });
-  }
-
-  void on_write(const boost::system::error_code &ec, std::size_t,
-                const bool keep_alive) {
-    if (ec)
-      return fail(ec, "write");
-
-    if (!keep_alive)
-      return do_close();
-
-    do_read();
-  }
-
-  void do_stream(lt::torrent_handle t, const lt::piece_index_t start_piece,
-                 const lt::piece_index_t end_piece, lt::piece_index_t piece,
-                 const int start_offset, const int end_offset,
-                 const bool keep_alive, std::size_t written = 0) {
-    handler_->schedule_piece(
-        t, piece,
-        [self = shared_from_this(), t, start_piece, end_piece, piece,
-         start_offset, end_offset, keep_alive,
-         written](piece_entry piece_data) {
-          if (piece_data.buffer == nullptr) {
-            std::cout << "interrupted: " << start_piece << "-" << end_piece
-                      << " " << piece << "\n";
-            return self->on_write(
-                net::error::make_error_code(net::error::interrupted), written,
-                keep_alive);
-          }
-
-          char *buffer_start = piece_data.buffer.get();
-          int piece_size = piece_data.size;
-
-          if (piece == start_piece) {
-            self->socket_.set_option(
-                net::socket_base::send_buffer_size(piece_size));
-            buffer_start += start_offset;
-            piece_size -= start_offset;
-          }
-
-          if (piece == end_piece)
-            piece_size -= end_offset;
-
-          // move piece_data.buffer to tmp to prevent its deallocation while
-          // writing
-          net::async_write(
-              self->socket_, net::const_buffer(buffer_start, piece_size),
-              [self = std::move(self), t, start_piece, end_piece, piece,
-               start_offset, end_offset, keep_alive, written,
-               tmp = std::move(piece_data.buffer)](
-                  const boost::system::error_code &ec,
-                  std::size_t transferred) {
-                if (ec || piece == end_piece)
-                  self->on_write(ec, written + transferred, keep_alive);
-                else
-                  self->do_stream(t, start_piece, end_piece,
-                                  lt::piece_index_t(int(piece) + 1),
-                                  start_offset, end_offset, keep_alive,
-                                  written + transferred);
-              });
-        });
-
-    auto buffer_pieces = std::min(
-        lt::piece_index_t(int(piece) + (int(piece) - int(start_piece) + 1)),
-        end_piece);
-    for (lt::piece_index_t future_piece{int(piece) + 1};
-         future_piece <= buffer_pieces; future_piece++) {
-      if (!t.is_valid() || t.have_piece(future_piece))
-        continue;
-      t.set_piece_deadline(future_piece, int(future_piece - piece) * 5000);
-    }
-  }
-
-  void do_close() {
-    boost::system::error_code ec;
-    socket_.shutdown(tcp::socket::shutdown_send, ec);
-  }
-
-  void handle_get(const request &req) {
-    response res{};
-    res.keep_alive = req.keep_alive;
-    res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
-
-    if (req.target == "/torrents") {
-      boost::json::array torrents;
-      for (auto &t : session_->get_torrents()) {
-        auto info = t.torrent_file();
-        if (info == nullptr)
-          continue;
-
-        auto wt = wrappers::wrap_torrent(info);
-        boost::json::value data = wrappers::to_json(wt);
-        torrents.push_back(data);
-      }
-
-      std::string content = boost::json::serialize(torrents);
-      res.status = "200 OK";
-      res.headers["Content-Type"] = "application/json";
-      res.headers["Content-Length"] = std::to_string(content.length());
-      if (req.method == "GET")
-        res.content = std::move(content);
-
-      return do_write(res);
-    }
-
-    static const std::regex torrent_regex("^/torrents/([0-9a-fA-F]{40})$");
-    if (std::regex_search(req.target.begin(), req.target.end(),
-                          torrent_regex)) {
-      std::string_view info_hash = req.target.substr(10);
-
-      lt::sha1_hash sha1;
-      lt::aux::from_hex(info_hash, sha1.data());
-      lt::torrent_handle t = session_->find_torrent(sha1);
-
-      if (!t.is_valid()) {
-        std::string content = "Torrent not found";
-        res.status = "404 Not Found";
-        res.headers["Content-Type"] = "text/plain";
-        res.headers["Content-Length"] = std::to_string(content.length());
-        if (req.method == "GET")
-          res.content = std::move(content);
-
-        return do_write(res);
-      }
-
-      handler_->wait_metadata(
-          t, [self = shared_from_this(), t, res,
-              req](std::shared_ptr<const lt::torrent_info> info) mutable {
-            if (info == nullptr) {
-              std::string content = "Torrent not found";
-              res.status = "404 Not Found";
-              res.headers["Content-Type"] = "text/plain";
-              res.headers["Content-Length"] = std::to_string(content.length());
-              if (req.method == "GET")
-                res.content = std::move(content);
-
-              return self->do_write(res);
-            }
-
-            std::string content =
-                wrappers::build_playlist(wrappers::wrap_files(info));
-            res.status = "200 OK";
-            res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
-            res.headers["Content-Length"] = std::to_string(content.length());
-            if (req.method == "GET")
-              res.content = std::move(content);
-
-            return self->do_write(res);
-          });
-      return;
-    }
-
-    static const std::regex file_regex("^/torrents/([0-9a-fA-F]{40})/(.+)$");
-    if (std::regex_search(req.target.begin(), req.target.end(), file_regex)) {
-      boost::urls::decode_view decoded(req.target);
-      std::string_view info_hash = req.target.substr(10, 40);
-      std::filesystem::path path =
-          std::string(decoded.begin(), decoded.end()).substr(51);
-
-      lt::sha1_hash sha1;
-      lt::aux::from_hex(info_hash, sha1.data());
-      lt::torrent_handle t = session_->find_torrent(sha1);
-
-      if (!t.is_valid()) {
-        std::string content = "Torrent not found";
-        res.status = "404 Not Found";
-        res.headers["Content-Type"] = "text/plain";
-        res.headers["Content-Length"] = std::to_string(content.length());
-        if (req.method == "GET")
-          res.content = std::move(content);
-
-        return do_write(res);
-      }
-
-      handler_->wait_metadata(
-          t, [self = shared_from_this(), t, res, req,
-              path](std::shared_ptr<const lt::torrent_info> info) mutable {
-            if (info == nullptr) {
-              std::string content = "Torrent not found";
-              res.status = "404 Not Found";
-              res.headers["Content-Type"] = "text/plain";
-              res.headers["Content-Length"] = std::to_string(content.length());
-              if (req.method == "GET")
-                res.content = std::move(content);
-
-              return self->do_write(res);
-            }
-
-            lt::file_index_t file_index{-1};
-            lt::file_index_t file_count{info->num_files()};
-            for (lt::file_index_t i{0}; i < file_count; i++) {
-              if (info->files().file_path(i) == path.make_preferred()) {
-                file_index = i;
-                break;
-              }
-            }
-
-            if (file_index < lt::file_index_t(0)) {
-              std::string content = "File not found";
-              res.status = "404 Not Found";
-              res.headers["Content-Type"] = "text/plain";
-              res.headers["Content-Length"] = std::to_string(content.length());
-              if (req.method == "GET")
-                res.content = std::move(content);
-
-              return self->do_write(res);
-            }
-
-            int64_t size = info->files().file_size(file_index);
-
-            range_parser::HTTPRange parsed;
-            auto field = req.headers.find("Range");
-            if (field == req.headers.end())
-              parsed = range_parser::parse("bytes=0-", size);
-            else
-              parsed = range_parser::parse(std::string(field->second), size);
-
-            range_parser::Range range = parsed.ranges.at(0);
-
-            std::string response;
-            response.reserve(256);
-            response += "HTTP/1.1 ";
-            response +=
-                (range.length < size ? "206 Partial Content" : "200 OK");
-            response += "\r\nAccept-Ranges: bytes\r\nConnection: ";
-            response += (req.keep_alive ? "keep-alive" : "close");
-            response += "\r\nContent-Type: ";
-            response += wrappers::mime_type(path.string());
-            response += "\r\nContent-Length: ";
-            response += std::to_string(range.length);
-            if (range.length < size) {
-              response += "\r\nContent-Range: ";
-              response += range.content_range(size);
-            }
-            response += "\r\n\r\n";
-
-            boost::system::error_code ec;
-            std::size_t header_written =
-                net::write(self->socket_, net::buffer(response), ec);
-
-            if (req.method == "HEAD" || ec)
-              return self->on_write(ec, header_written, req.keep_alive);
-
-            lt::peer_request mappings =
-                info->map_file(file_index, range.start, 0);
-            lt::peer_request end_mappings =
-                info->map_file(file_index, range.start + range.length, 0);
-
-            lt::piece_index_t start_piece = mappings.piece;
-            lt::piece_index_t end_piece{
-                std::min(int(end_mappings.piece), int(info->num_pieces() - 1))};
-            int64_t end_piece_size = info->files().piece_size(end_piece);
-
-            int start_offset = mappings.start;
-            int end_offset = end_mappings.start > 0
-                                 ? end_piece_size - end_mappings.start
-                                 : 0;
-
-            if (!t.have_piece(start_piece))
-              t.set_piece_deadline(start_piece, 5000);
-
-            self->do_stream(t, start_piece, end_piece, start_piece,
-                            start_offset, end_offset, res.keep_alive);
-          });
-
-      return;
-    }
-
-    if (req.target == "/shutdown") {
-      std::string content = "Server shutting down...";
-      res.status = "200 OK";
-      res.keep_alive = false;
-      res.headers["Connection"] = "close";
-      res.headers["Content-Type"] = "text/plain";
-      res.headers["Content-Length"] = std::to_string(content.length());
-      if (req.method == "GET")
-        res.content = std::move(content);
-
-      do_write(res);
-      return token_.request_stop();
-    }
-
-    std::string content = "Forbidden";
-    res.status = "403 Forbidden";
-    res.headers["Content-Type"] = "text/plain";
-    res.headers["Content-Length"] = std::to_string(content.length());
-    if (req.method == "GET")
-      res.content = std::move(content);
-
-    return do_write(res);
-  }
-
-  void handle_post(const request &req) {
-    std::string_view body = buf_.substr(buf_.find("\r\n\r\n") + 4);
-    response res{};
-    res.keep_alive = req.keep_alive;
-    res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
-
-    if (req.target != "/torrents") {
-      std::string content = "Forbidden";
-      res.status = "403 Forbidden";
-      res.headers["Content-Type"] = "text/plain";
-      res.headers["Content-Length"] = std::to_string(content.length());
-      res.content = std::move(content);
-
-      return do_write(res);
-    }
-
-    lt::add_torrent_params params = get_torrent_params(body);
-    params.save_path = handler_->save_path.make_preferred().string();
-    lt::torrent_handle t = session_->find_torrent(params.info_hashes.v1);
-
-    if (!t.is_valid()) {
-      lt::error_code ec;
-      t = session_->add_torrent(params, ec);
-      if (ec) {
-        std::string content = "Failed to add torrent " + ec.message();
-        res.status = "400 Bad Request";
-        res.headers["Content-Type"] = "text/plain";
-        res.headers["Content-Length"] = std::to_string(content.length());
-        res.content = std::move(content);
-
-        return do_write(res);
-      }
-    }
-
-    handler_->wait_metadata(
-        t, [self = shared_from_this(), t,
-            res](std::shared_ptr<const lt::torrent_info> info) mutable {
-          if (info == nullptr) {
-            std::string content = "Torrent not found";
-            res.status = "404 Not Found";
-            res.headers["Content-Type"] = "text/plain";
-            res.headers["Content-Length"] = std::to_string(content.length());
-            res.content = std::move(content);
-
-            return self->do_write(res);
-          }
-          std::string content =
-              wrappers::build_playlist(wrappers::wrap_files(info));
-          res.status = "200 OK";
-          res.headers["Content-Type"] = "application/vnd.apple.mpegurl";
-          res.headers["Content-Length"] = std::to_string(content.length());
-          res.content = std::move(content);
-
-          return self->do_write(res);
-        });
-    return;
-  }
-
-  void handle_delete(const request &req) {
-    response res{};
-    res.keep_alive = req.keep_alive;
-    res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
-
-    static const std::regex infohash_regex("^/torrents/([0-9a-fA-F]{40})");
-    if (std::regex_search(req.target.begin(), req.target.end(),
-                          infohash_regex)) {
-      std::string_view info_hash = req.target.substr(10, 40);
-
-      lt::sha1_hash sha1;
-      lt::aux::from_hex(info_hash, sha1.data());
-      lt::torrent_handle t = session_->find_torrent(sha1);
-
-      if (!t.is_valid()) {
-        std::string content = "Torrent not found";
-        res.status = "404 Not Found";
-        res.headers["Content-Type"] = "text/plain";
-        res.headers["Content-Length"] = std::to_string(content.length());
-        res.content = std::move(content);
-
-        return do_write(res);
-      }
-
-      if (req.target.find("?DeleteFiles=true") == std::string_view::npos)
-        session_->remove_torrent(t);
-      else
-        session_->remove_torrent(t, lt::remove_flags_t{(unsigned char)(1U)});
-
-      std::string content = "Torrent successfully deleted";
-      res.status = "200 OK";
-      res.headers["Content-Type"] = "text/plain";
-      res.headers["Content-Length"] = std::to_string(content.length());
-      res.content = std::move(content);
-
-      return do_write(res);
-    }
-
-    std::string content = "Forbidden";
-    res.status = "403 Forbidden";
-    res.headers["Content-Type"] = "text/plain";
-    res.headers["Content-Length"] = std::to_string(content.length());
-    res.content = std::move(content);
-
-    return do_write(res);
-  }
-
-  void handle_no_method(const request &req) {
-    std::string content = "Method not allowed";
-    response res{};
-    res.keep_alive = req.keep_alive;
-    res.status = "405 Method Not Allowed";
-    res.headers["Connection"] = (req.keep_alive ? "keep-alive" : "close");
-    res.headers["Content-Type"] = "text/plain";
-    res.headers["Content-Length"] = std::to_string(content.length());
-    res.content = std::move(content);
-
-    return do_write(res);
-  }
-};
-
-class torrent_server {
-  net::thread_pool::executor_type ex_;
-  tcp::acceptor acceptor_;
-  std::shared_ptr<alert_handler::handler> handler_;
-  net::signal_set signals_;
-  stop_token token_;
-
-public:
-  torrent_server(const net::thread_pool::executor_type &ex,
-                 const tcp::endpoint &endpoint,
-                 std::shared_ptr<alert_handler::handler> handler)
-      : ex_(ex), acceptor_(net::make_strand(ex), endpoint), handler_(handler),
-        signals_(ex, SIGINT, SIGTERM) {
-    signals_.async_wait([this](boost::system::error_code ec, int) {
-      if (!ec)
-        token_.request_stop();
-    });
-    token_.add_callback([this]() {
-      signals_.cancel();
-      acceptor_.cancel();
-      handler_->stop();
-    });
-    do_accept();
-  }
-
-  ~torrent_server() { token_.wait_stop(); }
-
-private:
-  void do_accept() {
-    acceptor_.async_accept(
-        net::make_strand(ex_),
-        [this](const boost::system::error_code &ec, tcp::socket socket) {
-          if (!ec)
-            std::make_shared<http_session>(std::move(socket), handler_, token_)
-                ->run();
-          else if (ec == net::error::operation_aborted) {
-            std::cout << "Accept loop exiting...\n";
-            return;
-          } else
-            fail(ec, "accept");
-
-          do_accept();
-        });
-  }
-};
-
 int main(int argc, char **argv) {
-
   namespace po = boost::program_options;
   namespace fs = std::filesystem;
 
@@ -716,11 +71,9 @@ int main(int argc, char **argv) {
   po::store(po::parse_command_line(argc, argv, desc), vm);
   po::notify(vm);
 
-  auto const address =
-      net::ip::make_address(vm.at("address").as<std::string>());
+  auto const address = vm.at("address").as<std::string>();
   auto const port = vm.at("port").as<uint16_t>();
   auto const save_path = vm.at("save-path").as<fs::path>();
-
   auto const resume_path = save_path / "resume_data";
 
   if (!(fs::exists(save_path) && fs::is_directory(save_path))) {
@@ -728,7 +81,6 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  net::thread_pool pool(std::thread::hardware_concurrency());
   lt::session_params params;
   params.settings.set_int(lt::settings_pack::alert_mask,
                           lt::alert_category::status |
@@ -745,8 +97,6 @@ int main(int argc, char **argv) {
   params.settings.set_int(lt::settings_pack::request_timeout, 10);
   params.settings.set_int(lt::settings_pack::torrent_connect_boost, 100);
   params.settings.set_int(lt::settings_pack::unchoke_slots_limit, -1);
-  // params.settings.set_bool(lt::settings_pack::close_redundant_connections,
-  //                          false);
   params.settings.set_bool(lt::settings_pack::no_atime_storage, true);
   params.settings.set_bool(lt::settings_pack::smooth_connects, false);
   auto handler = std::make_shared<alert_handler::handler>(params, save_path);
@@ -762,14 +112,336 @@ int main(int argc, char **argv) {
     handler->session->async_add_torrent(params);
   }
 
-  torrent_server server(pool.get_executor(), tcp::endpoint{address, port},
-                        handler);
-  std::cout << "Server running on port " << port << "...\n";
+  us_listen_socket_t *listen_socket = nullptr;
+  auto loop = uWS::Loop::get();
+  uWS::App()
+      .get("/torrents",
+           [=](auto *res, auto *req) {
+             boost::json::array torrents;
+             for (auto &t : handler->session->get_torrents()) {
+               auto info = t.torrent_file();
+               if (info == nullptr)
+                 continue;
 
-  pool.join();
+               auto wt = wrappers::wrap_torrent(info);
+               boost::json::value data = wrappers::to_json(wt);
+               torrents.push_back(data);
+             }
+
+             std::string content = boost::json::serialize(torrents);
+             res->writeHeader("Content-Type", "application/json");
+             res->end(content);
+           })
+      .get("/torrents/:infohash",
+           [=](auto *res, auto *req) {
+             std::string_view info_hash = req->getParameter(0);
+
+             lt::sha1_hash sha1;
+             lt::aux::from_hex(info_hash, sha1.data());
+             lt::torrent_handle t = handler->session->find_torrent(sha1);
+
+             if (!t.is_valid()) {
+               res->writeStatus("404 Not Found");
+               res->end("Torrent not found");
+               return;
+             }
+
+             auto aborted = std::make_shared<std::atomic<bool>>(false);
+             res->onAborted([aborted]() { aborted->store(true); });
+             handler->wait_metadata(
+                 t, [=](const std::shared_ptr<const lt::torrent_info> &info) {
+                   if (aborted->load())
+                     return;
+
+                   if (!info) {
+                     loop->defer([=]() {
+                       res->writeStatus("404 Not Found");
+                       res->end("Torrent not found");
+                     });
+                     return;
+                   }
+
+                   std::string content =
+                       wrappers::build_playlist(wrappers::wrap_files(info));
+                   loop->defer([=]() {
+                     res->writeHeader("Content-Type",
+                                      "application/vnd.apple.mpegurl");
+                     res->end(content);
+                   });
+                 });
+           })
+      .get(
+          "/torrents/:infohash/*",
+          [=](auto *res, auto *req) {
+            std::string_view info_hash = req->getParameter(0);
+            boost::urls::decode_view decoded(req->getUrl());
+            std::filesystem::path path =
+                std::string(decoded.begin(), decoded.end()).substr(51);
+            path = path.make_preferred();
+
+            lt::sha1_hash sha1;
+            lt::aux::from_hex(info_hash, sha1.data());
+            lt::torrent_handle t = handler->session->find_torrent(sha1);
+
+            if (!t.is_valid()) {
+              res->writeStatus("404 Not Found");
+              res->end("Torrent not found");
+              return;
+            }
+            auto aborted = std::make_shared<std::atomic<bool>>(false);
+            res->onAborted([aborted]() { aborted->store(true); });
+            handler->wait_metadata(
+                t, [=](const std::shared_ptr<const lt::torrent_info> &info) {
+                  if (aborted->load())
+                    return;
+
+                  if (!info) {
+                    loop->defer([=]() {
+                      res->writeStatus("404 Not Found");
+                      res->end("Torrent not found");
+                    });
+                    return;
+                  }
+                  lt::file_index_t file_index{-1};
+                  lt::file_index_t file_count{info->num_files()};
+                  for (lt::file_index_t i{0}; i < file_count; i++) {
+                    if (info->files().file_path(i) == path.string()) {
+                      file_index = i;
+                      break;
+                    }
+                  }
+                  if (file_index < lt::file_index_t(0)) {
+                    loop->defer([=]() {
+                      res->writeStatus("404 Not Found");
+                      res->end("File not found");
+                    });
+                    return;
+                  }
+                  int64_t size = info->files().file_size(file_index);
+                  // Parse Range header
+                  std::string range_header;
+                  if (req->getHeader("range").length() > 0)
+                    range_header = std::string(req->getHeader("range"));
+                  else
+                    range_header = "bytes=0-";
+                  range_parser::HTTPRange parsed =
+                      range_parser::parse(range_header, size);
+                  range_parser::Range range = parsed.ranges.at(0);
+                  std::string status =
+                      (range.length < size) ? "206 Partial Content" : "200 OK";
+                  loop->defer([=]() {
+                    res->writeStatus(status);
+                    res->writeHeader("Accept-Ranges", "bytes");
+                    res->writeHeader("Content-Type",
+                                     wrappers::mime_type(path.string()));
+                    if (range.length < size) {
+                      res->writeHeader("Content-Range",
+                                       range.content_range(size));
+                    }
+                  });
+
+                  // Streaming logic
+                  lt::peer_request mappings =
+                      info->map_file(file_index, range.start, 0);
+                  lt::peer_request end_mappings =
+                      info->map_file(file_index, range.start + range.length, 0);
+                  lt::piece_index_t start_piece = mappings.piece;
+                  lt::piece_index_t end_piece = lt::piece_index_t(std::min(
+                      int(end_mappings.piece), int(info->num_pieces() - 1)));
+                  int64_t end_piece_size = info->files().piece_size(end_piece);
+                  int start_offset = mappings.start;
+                  int end_offset = end_mappings.start > 0
+                                       ? end_piece_size - end_mappings.start
+                                       : 0;
+                  // Helper lambda for streaming
+
+                  auto stream_piece = std::make_shared<
+                      std::function<void(lt::piece_index_t, std::size_t)>>();
+                  *stream_piece = ([=](lt::piece_index_t piece,
+                                       std::size_t written) {
+                    if (aborted->load())
+                      return;
+
+                    handler->schedule_piece(
+                        t, piece, [=](const piece_entry &piece_data) {
+                          if (aborted->load())
+                            return;
+                          if (piece_data.buffer == nullptr) {
+                            loop->defer(
+                                [=]() { res->tryEnd({}, range.length); });
+                            return;
+                          }
+
+                          char *buffer_start = piece_data.buffer.get();
+                          int piece_size = piece_data.size;
+                          if (piece == start_piece) {
+                            buffer_start += start_offset;
+                            piece_size -= start_offset;
+                          }
+                          if (piece == end_piece)
+                            piece_size -= end_offset;
+
+                          loop->defer([=]() {
+                            auto [ok, done] = res->tryEnd(
+                                std::string_view(buffer_start, piece_size),
+                                range.length);
+                            if (done) {
+                              return;
+                            }
+
+                            if (!ok) {
+                              res->onWritable([=, buf = piece_data.buffer](
+                                                  std::size_t offset) {
+                                auto mapping = info->map_file(
+                                    file_index, range.start + offset, 0);
+
+                                auto new_start = buffer_start + mapping.start;
+                                auto new_size = piece_size - mapping.start;
+                                if (piece == start_piece) {
+                                  new_start -= start_offset;
+                                  new_size += start_offset;
+                                }
+
+                                auto [ok2, done2] = res->tryEnd(
+                                    std::string_view(new_start, new_size),
+                                    range.length);
+
+                                if (done2) {
+                                  return true;
+                                }
+
+                                if (!ok2) {
+                                  return false;
+                                }
+
+                                if (piece != end_piece) {
+                                  // Continue streaming next piece
+                                  (*stream_piece)(
+                                      lt::piece_index_t(int(piece) + 1),
+                                      written + piece_size);
+                                }
+
+                                return true;
+                              });
+
+                              return;
+                            }
+
+                            if (piece != end_piece) {
+                              (*stream_piece)(lt::piece_index_t(int(piece) + 1),
+                                              written + piece_size);
+                            }
+                          });
+                        });
+
+                    auto buffer_pieces = std::min(
+                        lt::piece_index_t(int(piece) +
+                                          (int(piece) - int(start_piece) + 1)),
+                        end_piece);
+                    for (lt::piece_index_t future_piece{int(piece) + 1};
+                         future_piece <= buffer_pieces; future_piece++) {
+                      if (!t.is_valid() || t.have_piece(future_piece))
+                        continue;
+                      t.set_piece_deadline(future_piece,
+                                           int(future_piece - piece) * 5000);
+                    }
+                  });
+                  // Start streaming
+                  if (!t.have_piece(start_piece))
+                    t.set_piece_deadline(start_piece, 5000);
+                  (*stream_piece)(start_piece, 0);
+                });
+          })
+      .post("/torrents",
+            [=](auto *res, auto *req) {
+              res->onData([=](std::string_view body, bool) {
+                lt::add_torrent_params params = get_torrent_params(body);
+                params.save_path = handler->save_path.make_preferred().string();
+                lt::torrent_handle t =
+                    handler->session->find_torrent(params.info_hashes.v1);
+
+                if (!t.is_valid()) {
+                  lt::error_code ec;
+                  t = handler->session->add_torrent(params, ec);
+                  if (ec) {
+                    res->writeStatus("400 Bad Request");
+                    res->end("Failed to add torrent " + ec.message());
+                    return;
+                  }
+                }
+
+                auto aborted = std::make_shared<std::atomic<bool>>(false);
+                res->onAborted([aborted]() { aborted->store(true); });
+                handler->wait_metadata(
+                    t,
+                    [=](const std::shared_ptr<const lt::torrent_info> &info) {
+                      if (aborted->load())
+                        return;
+
+                      if (!info) {
+                        loop->defer([=]() {
+                          res->writeStatus("404 Not Found");
+                          res->end("Torrent not found");
+                        });
+                        return;
+                      }
+
+                      std::string content =
+                          wrappers::build_playlist(wrappers::wrap_files(info));
+                      loop->defer([=]() {
+                        res->writeHeader("Content-Type",
+                                         "application/vnd.apple.mpegurl");
+                        res->end(content);
+                      });
+                    });
+              });
+            })
+      .del("/torrents/:infohash",
+           [=](auto *res, auto *req) {
+             std::string_view info_hash = req->getParameter(0);
+
+             lt::sha1_hash sha1;
+             lt::aux::from_hex(info_hash, sha1.data());
+             lt::torrent_handle t = handler->session->find_torrent(sha1);
+
+             if (!t.is_valid()) {
+               res->writeStatus("404 Not Found");
+               res->end("Torrent not found");
+               return;
+             }
+
+             if (req->getQuery("DeleteFiles") == "true")
+               handler->session->remove_torrent(
+                   t, lt::remove_flags_t{(unsigned char)(1U)});
+             else
+               handler->session->remove_torrent(t);
+
+             res->end("Torrent successfully deleted");
+           })
+      .get("/shutdown",
+           [&listen_socket](auto *res, auto *req) {
+             res->end("Server shutting down...");
+             us_listen_socket_close(0, listen_socket);
+           })
+      .any("/*",
+           [](auto *res, auto *req) {
+             res->writeStatus("403 Forbidden");
+             res->end("Forbidden");
+           })
+      .listen(address, port,
+              [=, &listen_socket](auto *token) {
+                if (token) {
+                  listen_socket = token;
+                  std::cout << "Server running on port " << port << "...\n";
+                } else {
+                  std::cerr << "Failed to listen on port " << port << "\n";
+                }
+              })
+      .run();
+
+  std::cout << "Shutting down server...\n";
+  handler->stop();
   handler->join();
-
   std::cout << "Closing program...\n";
-
   return 0;
 }
