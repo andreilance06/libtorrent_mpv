@@ -354,7 +354,15 @@ int main(int argc, char **argv) {
           })
       .post("/torrents",
             [=](auto *res, auto *req) {
-              res->onData([=](std::string_view body, bool) {
+              std::string body;
+              auto aborted = std::make_shared<std::atomic<bool>>(false);
+              res->onAborted([aborted]() { aborted->store(true); });
+
+              res->onData([=, &body](std::string_view part, bool last) {
+                body.append(part.data(), part.size());
+                if (!last)
+                  return;
+
                 lt::add_torrent_params params = get_torrent_params(body);
                 params.save_path = handler->save_path.make_preferred().string();
                 lt::torrent_handle t =
@@ -369,9 +377,6 @@ int main(int argc, char **argv) {
                     return;
                   }
                 }
-
-                auto aborted = std::make_shared<std::atomic<bool>>(false);
-                res->onAborted([aborted]() { aborted->store(true); });
                 handler->wait_metadata(
                     t,
                     [=](const std::shared_ptr<const lt::torrent_info> &info) {
