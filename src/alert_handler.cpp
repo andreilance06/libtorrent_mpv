@@ -250,10 +250,10 @@ void handler::stop() {
     t.save_resume_data(t.only_if_modified | t.save_info_dict);
   }
   session.reset();
-  for (auto req : torrent_requests_)
+  for (const auto& req : torrent_requests_)
     req.callback({});
   torrent_requests_.clear();
-  for (auto req : piece_requests_)
+  for (const auto& req : piece_requests_)
     req.callback({});
   piece_requests_.clear();
 }
