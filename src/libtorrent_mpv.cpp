@@ -128,9 +128,23 @@ int main(int argc, char **argv) {
                torrents.push_back(data);
              }
 
-             std::string content = boost::json::serialize(torrents);
-             res->writeHeader("Content-Type", "application/json");
-             res->end(content);
+             std::string content{boost::json::serialize(torrents)};
+             res->writeStatus("200 OK")->writeHeader("Content-Type",
+                                                     "application/json");
+             auto [ok, done] = res->tryEnd(content, content.length());
+
+             if (done)
+               return;
+
+             if (!ok) {
+               res->onWritable(
+                   [=, content = std::move(content)](std::size_t offset) {
+                     auto [ok2, _] =
+                         res->tryEnd(std::string_view(content.data(), offset),
+                                     content.length());
+                     return ok2;
+                   });
+             }
            })
       .get("/torrents/:infohash",
            [=](auto *res, auto *req) {
