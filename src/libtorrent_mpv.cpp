@@ -40,7 +40,7 @@ static lt::add_torrent_params get_torrent_params(std::string_view id) {
   if (!ec)
     return params;
 
-  params = lt::parse_magnet_uri(lt::string_view(id.data(), id.size()), ec);
+  params = lt::parse_magnet_uri(lt::string_view(id.data(), id.length()), ec);
   if (!ec)
     return params;
 
@@ -155,8 +155,7 @@ int main(int argc, char **argv) {
              lt::torrent_handle t = handler->session->find_torrent(sha1);
 
              if (!t.is_valid()) {
-               res->writeStatus("404 Not Found");
-               res->end("Torrent not found");
+               res->writeStatus("404 Not Found")->end("Torrent not found");
                return;
              }
 
@@ -169,8 +168,8 @@ int main(int argc, char **argv) {
 
                    if (!info) {
                      loop->defer([=]() {
-                       res->writeStatus("404 Not Found");
-                       res->end("Torrent not found");
+                       res->writeStatus("404 Not Found")
+                           ->end("Torrent not found");
                      });
                      return;
                    }
@@ -178,202 +177,190 @@ int main(int argc, char **argv) {
                    std::string content =
                        wrappers::build_playlist(wrappers::wrap_files(info));
                    loop->defer([=]() {
-                     res->writeHeader("Content-Type",
-                                      "application/vnd.apple.mpegurl");
-                     res->end(content);
+                     res->writeStatus("200 OK")
+                         ->writeHeader("Content-Type",
+                                       "application/vnd.apple.mpegurl")
+                         ->end(content);
                    });
                  });
            })
-      .get(
-          "/torrents/:infohash/*",
-          [=](auto *res, auto *req) {
-            std::string_view info_hash = req->getParameter(0);
-            boost::urls::decode_view decoded(req->getUrl());
-            std::filesystem::path path =
-                std::string(decoded.begin(), decoded.end()).substr(51);
-            path = path.make_preferred();
+      .get("/torrents/:infohash/*",
+           [=](auto *res, auto *req) {
+             std::string_view info_hash = req->getParameter(0);
+             boost::urls::decode_view decoded(req->getUrl());
+             std::filesystem::path path =
+                 std::string(decoded.begin(), decoded.end()).substr(51);
+             path = path.make_preferred();
 
-            lt::sha1_hash sha1;
-            lt::aux::from_hex(info_hash, sha1.data());
-            lt::torrent_handle t = handler->session->find_torrent(sha1);
+             lt::sha1_hash sha1;
+             lt::aux::from_hex(info_hash, sha1.data());
+             lt::torrent_handle t = handler->session->find_torrent(sha1);
 
-            if (!t.is_valid()) {
-              res->writeStatus("404 Not Found");
-              res->end("Torrent not found");
-              return;
-            }
-            auto aborted = std::make_shared<std::atomic<bool>>(false);
-            res->onAborted([aborted]() { aborted->store(true); });
-            handler->wait_metadata(
-                t, [=](const std::shared_ptr<const lt::torrent_info> &info) {
-                  if (aborted->load())
-                    return;
+             if (!t.is_valid()) {
+               res->writeStatus("404 Not Found")->end("Torrent not found");
+               return;
+             }
+             auto aborted = std::make_shared<std::atomic<bool>>(false);
+             res->onAborted([aborted]() { aborted->store(true); });
+             handler->wait_metadata(t, [=](const std::shared_ptr<
+                                           const lt::torrent_info> &info) {
+               if (aborted->load())
+                 return;
 
-                  if (!info) {
-                    loop->defer([=]() {
-                      res->writeStatus("404 Not Found");
-                      res->end("Torrent not found");
-                    });
-                    return;
-                  }
-                  lt::file_index_t file_index{-1};
-                  lt::file_index_t file_count{info->num_files()};
-                  for (lt::file_index_t i{0}; i < file_count; i++) {
-                    if (info->files().file_path(i) == path.string()) {
-                      file_index = i;
-                      break;
-                    }
-                  }
-                  if (file_index < lt::file_index_t(0)) {
-                    loop->defer([=]() {
-                      res->writeStatus("404 Not Found");
-                      res->end("File not found");
-                    });
-                    return;
-                  }
-                  int64_t size = info->files().file_size(file_index);
-                  // Parse Range header
-                  std::string range_header;
-                  if (req->getHeader("range").length() > 0)
-                    range_header = std::string(req->getHeader("range"));
-                  else
-                    range_header = "bytes=0-";
-                  range_parser::HTTPRange parsed =
-                      range_parser::parse(range_header, size);
-                  range_parser::Range range = parsed.ranges.at(0);
-                  std::string status =
-                      (range.length < size) ? "206 Partial Content" : "200 OK";
-                  loop->defer([=]() {
-                    res->writeStatus(status);
-                    res->writeHeader("Accept-Ranges", "bytes");
-                    res->writeHeader("Content-Type",
-                                     wrappers::mime_type(path.string()));
-                    if (range.length < size) {
-                      res->writeHeader("Content-Range",
-                                       range.content_range(size));
-                    }
-                  });
+               if (!info) {
+                 loop->defer([=]() {
+                   res->writeStatus("404 Not Found")->end("Torrent not found");
+                 });
+                 return;
+               }
+               lt::file_index_t file_index{-1};
+               lt::file_index_t file_count{info->num_files()};
+               for (lt::file_index_t i{0}; i < file_count; i++) {
+                 if (info->files().file_path(i) == path.string()) {
+                   file_index = i;
+                   break;
+                 }
+               }
+               if (file_index < lt::file_index_t(0)) {
+                 loop->defer([=]() {
+                   res->writeStatus("404 Not Found")->end("File not found");
+                 });
+                 return;
+               }
+               int64_t size = info->files().file_size(file_index);
+               // Parse Range header
+               std::string range_header;
+               if (req->getHeader("range").length() > 0)
+                 range_header = std::string(req->getHeader("range"));
+               else
+                 range_header = "bytes=0-";
+               range_parser::HTTPRange parsed =
+                   range_parser::parse(range_header, size);
+               range_parser::Range range = parsed.ranges.at(0);
+               std::string status =
+                   (range.length < size) ? "206 Partial Content" : "200 OK";
+               loop->defer([=]() {
+                 res->writeStatus(status)
+                     ->writeHeader("Accept-Ranges", "bytes")
+                     ->writeHeader("Content-Type",
+                                   wrappers::mime_type(path.string()));
+                 if (range.length < size) {
+                   res->writeHeader("Content-Range", range.content_range(size));
+                 }
+               });
 
-                  // Streaming logic
-                  lt::peer_request mappings =
-                      info->map_file(file_index, range.start, 0);
-                  lt::peer_request end_mappings =
-                      info->map_file(file_index, range.start + range.length, 0);
-                  lt::piece_index_t start_piece = mappings.piece;
-                  lt::piece_index_t end_piece = lt::piece_index_t(std::min(
-                      int(end_mappings.piece), int(info->num_pieces() - 1)));
-                  int64_t end_piece_size = info->files().piece_size(end_piece);
-                  int start_offset = mappings.start;
-                  int end_offset = end_mappings.start > 0
-                                       ? end_piece_size - end_mappings.start
-                                       : 0;
-                  // Helper lambda for streaming
+               // Streaming logic
+               lt::peer_request mappings =
+                   info->map_file(file_index, range.start, 0);
+               lt::peer_request end_mappings =
+                   info->map_file(file_index, range.start + range.length, 0);
+               lt::piece_index_t start_piece = mappings.piece;
+               lt::piece_index_t end_piece = lt::piece_index_t(std::min(
+                   int(end_mappings.piece), int(info->num_pieces() - 1)));
+               int64_t end_piece_size = info->files().piece_size(end_piece);
+               int start_offset = mappings.start;
+               int end_offset = end_mappings.start > 0
+                                    ? end_piece_size - end_mappings.start
+                                    : 0;
+               // Helper lambda for streaming
 
-                  auto stream_piece = std::make_shared<
-                      std::function<void(lt::piece_index_t, std::size_t)>>();
-                  *stream_piece = ([=](lt::piece_index_t piece,
-                                       std::size_t written) {
-                    if (aborted->load())
-                      return;
+               auto stream_piece = ([=](const auto &self,
+                                        lt::piece_index_t piece,
+                                        std::size_t written) {
+                 if (aborted->load())
+                   return;
 
-                    handler->schedule_piece(
-                        t, piece, [=](const piece_entry &piece_data) {
-                          if (aborted->load())
-                            return;
-                          if (piece_data.buffer == nullptr) {
-                            loop->defer(
-                                [=]() { res->tryEnd({}, range.length); });
-                            return;
-                          }
+                 handler->schedule_piece(
+                     t, piece, [=](const piece_entry &piece_data) {
+                       if (aborted->load())
+                         return;
+                       if (piece_data.buffer == nullptr) {
+                         loop->defer([=]() { res->tryEnd({}, range.length); });
+                         return;
+                       }
 
-                          char *buffer_start = piece_data.buffer.get();
-                          int piece_size = piece_data.size;
-                          if (piece == start_piece) {
-                            buffer_start += start_offset;
-                            piece_size -= start_offset;
-                          }
-                          if (piece == end_piece)
-                            piece_size -= end_offset;
+                       char *buffer_start = piece_data.buffer.get();
+                       int piece_size = piece_data.size;
+                       if (piece == start_piece) {
+                         buffer_start += start_offset;
+                         piece_size -= start_offset;
+                       }
+                       if (piece == end_piece)
+                         piece_size -= end_offset;
 
-                          loop->defer([=]() {
-                            auto [ok, done] = res->tryEnd(
-                                std::string_view(buffer_start, piece_size),
-                                range.length);
-                            if (done) {
-                              return;
-                            }
+                       loop->defer([=]() {
+                         auto [ok, done] = res->tryEnd(
+                             std::string_view(buffer_start, piece_size),
+                             range.length);
+                         if (done)
+                           return;
 
-                            if (!ok) {
-                              res->onWritable([=, buf = piece_data.buffer](
-                                                  std::size_t offset) {
-                                auto mapping = info->map_file(
-                                    file_index, range.start + offset, 0);
+                         if (!ok) {
+                           res->onWritable([=, buf = piece_data.buffer](
+                                               std::size_t offset) {
+                             auto mapping = info->map_file(
+                                 file_index, range.start + offset, 0);
 
-                                auto new_start = buffer_start + mapping.start;
-                                auto new_size = piece_size - mapping.start;
-                                if (piece == start_piece) {
-                                  new_start -= start_offset;
-                                  new_size += start_offset;
-                                }
+                             auto new_start = buffer_start + mapping.start;
+                             auto new_size = piece_size - mapping.start;
+                             if (piece == start_piece) {
+                               new_start -= start_offset;
+                               new_size += start_offset;
+                             }
 
-                                auto [ok2, done2] = res->tryEnd(
-                                    std::string_view(new_start, new_size),
-                                    range.length);
+                             auto [ok2, done2] = res->tryEnd(
+                                 std::string_view(new_start, new_size),
+                                 range.length);
 
-                                if (done2) {
-                                  return true;
-                                }
+                             if (done2)
+                               return true;
 
-                                if (!ok2) {
-                                  return false;
-                                }
+                             if (!ok2)
+                               return false;
 
-                                if (piece != end_piece) {
-                                  // Continue streaming next piece
-                                  (*stream_piece)(
-                                      lt::piece_index_t(int(piece) + 1),
-                                      written + piece_size);
-                                }
+                             if (piece != end_piece) {
+                               // Continue streaming next piece
+                               self(self, lt::piece_index_t(int(piece) + 1),
+                                    written + piece_size);
+                             }
 
-                                return true;
-                              });
+                             return true;
+                           });
 
-                              return;
-                            }
+                           return;
+                         }
 
-                            if (piece != end_piece) {
-                              (*stream_piece)(lt::piece_index_t(int(piece) + 1),
-                                              written + piece_size);
-                            }
-                          });
-                        });
+                         if (piece != end_piece) {
+                           self(self, lt::piece_index_t(int(piece) + 1),
+                                written + piece_size);
+                         }
+                       });
+                     });
 
-                    auto buffer_pieces = std::min(
-                        lt::piece_index_t(int(piece) +
-                                          (int(piece) - int(start_piece) + 1)),
-                        end_piece);
-                    for (lt::piece_index_t future_piece{int(piece) + 1};
-                         future_piece <= buffer_pieces; future_piece++) {
-                      if (!t.is_valid() || t.have_piece(future_piece))
-                        continue;
-                      t.set_piece_deadline(future_piece,
-                                           int(future_piece - piece) * 5000);
-                    }
-                  });
-                  // Start streaming
-                  if (!t.have_piece(start_piece))
-                    t.set_piece_deadline(start_piece, 5000);
-                  (*stream_piece)(start_piece, 0);
-                });
-          })
+                 auto buffer_pieces = std::min(
+                     lt::piece_index_t(int(piece) +
+                                       (int(piece) - int(start_piece) + 1)),
+                     end_piece);
+                 for (lt::piece_index_t future_piece{int(piece) + 1};
+                      future_piece <= buffer_pieces; future_piece++) {
+                   if (!t.is_valid() || t.have_piece(future_piece))
+                     continue;
+                   t.set_piece_deadline(future_piece,
+                                        int(future_piece - piece) * 5000);
+                 }
+               });
+               // Start streaming
+               if (!t.have_piece(start_piece))
+                 t.set_piece_deadline(start_piece, 5000);
+               stream_piece(stream_piece, start_piece, 0);
+             });
+           })
       .post("/torrents",
             [=](auto *res, auto *req) {
               std::string body;
-              auto aborted = std::make_shared<std::atomic<bool>>(false);
-              res->onAborted([aborted]() { aborted->store(true); });
 
               res->onData([=, &body](std::string_view part, bool last) {
-                body.append(part.data(), part.size());
+                body.append(part.data(), part.length());
                 if (!last)
                   return;
 
@@ -386,11 +373,14 @@ int main(int argc, char **argv) {
                   lt::error_code ec;
                   t = handler->session->add_torrent(params, ec);
                   if (ec) {
-                    res->writeStatus("400 Bad Request");
-                    res->end("Failed to add torrent " + ec.message());
+                    res->writeStatus("400 Bad Request")
+                        ->end("Failed to add torrent " + ec.message());
                     return;
                   }
                 }
+
+                auto aborted = std::make_shared<std::atomic<bool>>(false);
+                res->onAborted([aborted]() { aborted->store(true); });
                 handler->wait_metadata(
                     t,
                     [=](const std::shared_ptr<const lt::torrent_info> &info) {
@@ -399,8 +389,8 @@ int main(int argc, char **argv) {
 
                       if (!info) {
                         loop->defer([=]() {
-                          res->writeStatus("404 Not Found");
-                          res->end("Torrent not found");
+                          res->writeStatus("404 Not Found")
+                              ->end("Torrent not found");
                         });
                         return;
                       }
@@ -408,9 +398,10 @@ int main(int argc, char **argv) {
                       std::string content =
                           wrappers::build_playlist(wrappers::wrap_files(info));
                       loop->defer([=]() {
-                        res->writeHeader("Content-Type",
-                                         "application/vnd.apple.mpegurl");
-                        res->end(content);
+                        res->writeStatus("200 OK")
+                            ->writeHeader("Content-Type",
+                                          "application/vnd.apple.mpegurl")
+                            ->end(content);
                       });
                     });
               });
@@ -424,8 +415,7 @@ int main(int argc, char **argv) {
              lt::torrent_handle t = handler->session->find_torrent(sha1);
 
              if (!t.is_valid()) {
-               res->writeStatus("404 Not Found");
-               res->end("Torrent not found");
+               res->writeStatus("404 Not Found")->end("Torrent not found");
                return;
              }
 
@@ -435,17 +425,16 @@ int main(int argc, char **argv) {
              else
                handler->session->remove_torrent(t);
 
-             res->end("Torrent successfully deleted");
+             res->writeStatus("200 OK")->end("Torrent successfully deleted");
            })
       .get("/shutdown",
            [&listen_socket](auto *res, auto *req) {
-             res->end("Server shutting down...");
+             res->writeStatus("200 OK")->end("Server shutting down...");
              us_listen_socket_close(0, listen_socket);
            })
       .any("/*",
            [](auto *res, auto *req) {
-             res->writeStatus("403 Forbidden");
-             res->end("Forbidden");
+             res->writeStatus("403 Forbidden")->end("Forbidden");
            })
       .listen(address, port,
               [=, &listen_socket](auto *token) {
