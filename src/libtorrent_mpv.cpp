@@ -358,6 +358,8 @@ int main(int argc, char **argv) {
       .post("/torrents",
             [=](auto *res, auto *req) {
               std::string body;
+              auto aborted = std::make_shared<std::atomic<bool>>(false);
+              res->onAborted([aborted]() { aborted->store(true); });
 
               res->onData([=, &body](std::string_view part, bool last) {
                 body.append(part.data(), part.length());
@@ -379,8 +381,6 @@ int main(int argc, char **argv) {
                   }
                 }
 
-                auto aborted = std::make_shared<std::atomic<bool>>(false);
-                res->onAborted([aborted]() { aborted->store(true); });
                 handler->wait_metadata(
                     t,
                     [=](const std::shared_ptr<const lt::torrent_info> &info) {
