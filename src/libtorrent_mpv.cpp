@@ -5,6 +5,7 @@
 #include <App.h>
 #include <boost/program_options.hpp>
 #include <boost/url/decode_view.hpp>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -55,9 +56,24 @@ static lt::add_torrent_params get_torrent_params(std::string_view id) {
   return lt::add_torrent_params{};
 }
 
+static us_listen_socket_t *&listen_socket_ptr() {
+  static us_listen_socket_t *ptr = nullptr;
+  return ptr;
+}
+
+void handle_signal(int) {
+  auto &sock = listen_socket_ptr();
+  if (sock) {
+    us_listen_socket_close(0, sock);
+    sock = nullptr;
+  }
+}
+
 int main(int argc, char **argv) {
   namespace po = boost::program_options;
   namespace fs = std::filesystem;
+  std::signal(SIGINT, handle_signal);
+  std::signal(SIGTERM, handle_signal);
 
   po::options_description desc("Allowed options");
   desc.add_options()("help", "produce help")(
@@ -112,7 +128,6 @@ int main(int argc, char **argv) {
     handler->session->async_add_torrent(params);
   }
 
-  us_listen_socket_t *listen_socket = nullptr;
   auto loop = uWS::Loop::get();
   uWS::App()
       .get("/torrents",
@@ -428,18 +443,18 @@ int main(int argc, char **argv) {
              res->writeStatus("200 OK")->end("Torrent successfully deleted");
            })
       .get("/shutdown",
-           [&listen_socket](auto *res, auto *req) {
+           [=](auto *res, auto *req) {
              res->writeStatus("200 OK")->end("Server shutting down...");
-             us_listen_socket_close(0, listen_socket);
+             handle_signal(0);
            })
       .any("/*",
            [](auto *res, auto *req) {
              res->writeStatus("403 Forbidden")->end("Forbidden");
            })
       .listen(address, port,
-              [=, &listen_socket](auto *token) {
+              [=](auto *token) {
                 if (token) {
-                  listen_socket = token;
+                  listen_socket_ptr() = token;
                   std::cout << "Server running on port " << port << "...\n";
                 } else {
                   std::cerr << "Failed to listen on port " << port << "\n";
