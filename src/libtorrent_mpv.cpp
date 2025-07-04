@@ -1,6 +1,5 @@
 #include "alert_handler.hpp"
 #include "libusockets.h"
-#include "range_parser.hpp"
 #include "wrappers.hpp"
 #include <App.h>
 #include <boost/program_options.hpp>
@@ -16,6 +15,7 @@
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
 #include <map>
+#include <range_parser/range_parser.hpp>
 #include <regex>
 #include <string>
 #include <string_view>
