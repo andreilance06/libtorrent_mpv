@@ -1,4 +1,6 @@
 local msg = require("mp.msg")
+local http = require("socket.http")
+local ltn12 = require("ltn12")
 
 local Config = require("lib/config")
 local State = require("lib/state")
@@ -18,12 +20,6 @@ function Client.start()
     return true
   end
 
-  if State.is_running() then
-    msg.debug("Client is already running")
-    State.client_running = true
-    return true
-  end
-
   local cmd = mp.command_native({
     name = "subprocess",
     playback_only = false,
@@ -39,7 +35,8 @@ function Client.start()
 
   msg.debug("Started torrent server")
   State.client_running = true
-  -- State.launched_by_us = true
+  State.launched_by_us = true
+  State.find_service()
   return true
 end
 
@@ -52,15 +49,17 @@ function Client.close()
   --   msg.debug("Can't close client launched by another process")
   --   return false
   -- end
-  local cmd = mp.command_native({
-    name = "subprocess",
-    playback_only = false,
-    capture_stderr = true,
-    args = { "curl", "127.0.0.1:" .. Config.opts.port .. "/shutdown" }
-  })
 
-  if cmd.status ~= 0 then
-    msg.error("error closing client:", cmd.stderr)
+  local url = "http://" .. State.service_ip .. ":" .. State.service_port .. "/shutdown"
+  local response_body = {}
+  local res, code = http.request {
+    url = url,
+    sink = ltn12.sink.table(response_body),
+    method = "GET"
+  }
+
+  if code ~= 200 then
+    msg.error("error closing client: http status is", code)
     return false
   end
 
@@ -77,21 +76,25 @@ function Client.add(torrent_url)
     return nil
   end
 
-  local cmd = mp.command_native({
-    name = "subprocess",
-    capture_stdout = true,
-    args = { "curl", "-s", "-f", "--retry", "10", "--retry-delay", "1", "--retry-connrefused", "-d",
-      torrent_url, "127.0.0.1:" .. Config.opts.port .. "/torrents" }
-  })
+  local url = "http://" .. State.service_ip .. ":" .. State.service_port .. "/torrents"
+  local response_body = {}
+  local res, code = http.request {
+    url = url,
+    sink = ltn12.sink.table(response_body),
+    method = "POST",
+    source = ltn12.source.string(torrent_url),
+    headers = {
+      ["content-length"] = tostring(#torrent_url)
+    }
+  }
 
-  local stdout = cmd.stdout or ""
-  local infohash = stdout:match(string.rep("%x", 40))
-  if cmd.status ~= 0 or not infohash or #infohash == 0 then
-    msg.debug("Unable to get infohash for", torrent_url)
+  local playlist = table.concat(response_body)
+  if code ~= 200 or not playlist or #playlist == 0 then
+    msg.debug("Unable to get playlist for", torrent_url)
     return nil
   end
 
-  return infohash
+  return playlist
 end
 
 function Client.remove(info_hash, delete_files)
@@ -117,13 +120,17 @@ function Client.remove(info_hash, delete_files)
     delete_files = false
   end
 
-  local cmd = mp.command_native({
-    name = "subprocess",
-    playback_only = false,
-    args = { "curl", "-X", "DELETE", "127.0.0.1:" .. Config.opts.port .. "/torrents/" .. info_hash .. "?DeleteFiles=" .. tostring(delete_files) },
-  })
+  local url = "http://" ..
+      State.service_ip ..
+      ":" .. State.service_port .. "/torrents/" .. info_hash .. "?DeleteFiles=" .. tostring(delete_files)
+  local response_body = {}
+  local res, code = http.request {
+    url = url,
+    sink = ltn12.sink.table(response_body),
+    method = "DELETE"
+  }
 
-  return cmd.status ~= 0
+  return code == 200
 end
 
 return Client

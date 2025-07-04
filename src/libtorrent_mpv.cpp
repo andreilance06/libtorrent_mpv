@@ -15,6 +15,7 @@
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
 #include <map>
+#include <mdns_cpp/mdns.hpp>
 #include <range_parser/range_parser.hpp>
 #include <regex>
 #include <string>
@@ -127,6 +128,10 @@ int main(int argc, char **argv) {
     params.save_path = handler->save_path.make_preferred().string();
     handler->session->async_add_torrent(params);
   }
+
+  mdns_cpp::mDNS mdns;
+  mdns.setServiceName("_libtorrentmpv._tcp.local.");
+  mdns.setServicePort(port);
 
   auto loop = uWS::Loop::get();
   uWS::App()
@@ -452,10 +457,15 @@ int main(int argc, char **argv) {
              res->writeStatus("403 Forbidden")->end("Forbidden");
            })
       .listen(address, port,
-              [=](auto *token) {
+              [=, &mdns](auto *token) {
                 if (token) {
                   listen_socket_ptr() = token;
                   std::cout << "Server running on port " << port << "...\n";
+                  mdns.startService();
+                  if (!mdns.isServiceRunning()) {
+                    std::cerr << "Failed to start mDNS service.\n";
+                    handle_signal(0);
+                  }
                 } else {
                   std::cerr << "Failed to listen on port " << port << "\n";
                 }
@@ -463,6 +473,10 @@ int main(int argc, char **argv) {
       .run();
 
   std::cout << "Shutting down server...\n";
+  if (mdns.isServiceRunning()) {
+    std::cout << "Stopping mDNS service...\n";
+    mdns.stopService();
+  }
   handler->stop();
   handler->join();
   std::cout << "Closing program...\n";

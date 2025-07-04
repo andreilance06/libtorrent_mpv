@@ -1,3 +1,7 @@
+package.path = mp.get_script_directory() .. "/lua_packages/share/lua/5.1/?.lua;" ..
+    package.path
+package.cpath = mp.get_script_directory() .. "/lua_packages/lib64/lua/5.1/?.so;" .. package.cpath
+
 -- Utils
 local options = require("mp.options")
 
@@ -22,14 +26,30 @@ local function on_file_loaded()
 
   for _, pattern in ipairs(TORRENT_PATTERNS) do
     if path:find(pattern) then
-      if Client.start() then
-        local infohash = Client.add(path)
-        if infohash then
+      if not State.client_running then
+        Client.start()
+      end
+
+      if State.client_running then
+        local playlist = Client.add(path)
+        if playlist then
           State.update()
-          mp.set_property("stream-open-filename", "http://127.0.0.1:" .. Config.opts.port .. "/torrents/" .. infohash)
-          return
+          local infohash = playlist:match("/(" .. string.rep("%x", 40) .. ")/")
+          for _, v in pairs(State.torrents) do
+            if v.InfoHash == infohash then
+              local media_files = {}
+              for _, file in pairs(v.Files) do
+                if string.match(file.MimeType, "video") or string.match(file.MimeType, "audio") then
+                  table.insert(media_files, file)
+                end
+              end
+              mp.set_property("stream-open-filename", "memory://" .. Menu.generate_playlist(media_files))
+              return
+            end
+          end
         end
       end
+
       break
     end
   end
@@ -55,15 +75,15 @@ local function init()
   -- Register MPV event handlers
   mp.add_hook("on_load", 50, on_file_loaded)
 
-  -- if Config.opts.CloseClientOnMpvExit then
-  --   mp.register_event("shutdown", function() Client.close() end)
-  -- end
+  State.find_service()
+  mp.add_periodic_timer(15, function()
+    State.find_service()
+  end)
 
-  if Config.opts.StartClientOnMpvLaunch then
+  if State.client_running then
+    State.launched_by_us = false
+  elseif Config.opts.StartClientOnMpvLaunch then
     Client.start()
-  elseif State.is_running() then
-    State.client_running = true
-    -- State.launched_by_us = false
   end
 end
 

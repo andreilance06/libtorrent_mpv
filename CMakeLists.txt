@@ -52,6 +52,13 @@ target_include_directories(uWebSockets INTERFACE "${uwebsockets_content_SOURCE_D
 target_link_libraries(uWebSockets INTERFACE uSockets ${ZLIB_LIBRARIES})
 target_compile_options(uWebSockets INTERFACE -Wno-deprecated-declarations)
 
+# mDNS
+FetchContent_Declare(
+    mdns
+    GIT_REPOSITORY "https://github.com/kiddigital/mdns_cpp.git"
+)
+FetchContent_MakeAvailable(mdns)
+
 # range_parser
 FetchContent_Declare(
     range_parser
@@ -77,8 +84,9 @@ target_compile_options(libtorrent_mpv
 
 target_link_libraries(libtorrent_mpv
     PRIVATE
+    ${Boost_LIBRARIES}
     torrent-rasterbar
     uWebSockets
-    ${Boost_LIBRARIES}
+    mdns_cpp
     range_parser
 )
