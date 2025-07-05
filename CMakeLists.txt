@@ -6,16 +6,19 @@ set(CMAKE_CXX_STANDARD 17)
 include(CheckIPOSupported)
 include(FetchContent)
 check_ipo_supported(RESULT lto_supported OUTPUT output)
-if(lto_supported)
+if(lto_supported AND NOT WIN32)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 else()
     message(WARNING "IPO is not supported: ${output}")
 endif()
 
-# Boost
-set(Boost_DIR "../boost_1_88_0/stage/lib/cmake/Boost-1.88.0/")
-cmake_policy(SET CMP0167 NEW)
-find_package(Boost REQUIRED COMPONENTS system filesystem json program_options url)
+if(WIN32)
+    set(BUILD_SHARED_LIBS OFF)
+    set(static_runtime ON)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static")
+endif()
+
+find_package(Boost REQUIRED COMPONENTS system filesystem json program_options)
 
 # libtorrent
 FetchContent_Declare(
@@ -24,6 +27,22 @@ FetchContent_Declare(
     GIT_TAG "v2.0.11"
 )
 FetchContent_MakeAvailable(libtorrent)
+
+# zlib
+FetchContent_Declare(
+    zlib_content
+    GIT_REPOSITORY "https://github.com/madler/zlib.git"
+    GIT_TAG "v1.3.1"
+)
+FetchContent_MakeAvailable(zlib_content)
+
+# libuv
+FetchContent_Declare(
+    uv_content
+    GIT_REPOSITORY "https://github.com/libuv/libuv.git"
+    GIT_TAG "v1.51.0"
+)
+FetchContent_MakeAvailable(uv_content)
 
 # uSockets
 FetchContent_Declare(
@@ -36,6 +55,7 @@ FetchContent_MakeAvailable(uSockets_content)
 file(GLOB_RECURSE US_SOURCES "${usockets_content_SOURCE_DIR}/src/*.c")
 add_library(uSockets ${US_SOURCES})
 target_include_directories(uSockets PUBLIC "${usockets_content_SOURCE_DIR}/src/")
+target_link_libraries(uSockets PUBLIC libuv::libuv)
 target_compile_definitions(uSockets PRIVATE LIBUS_NO_SSL)
 
 # uWebSockets
@@ -46,16 +66,19 @@ FetchContent_Declare(
     GIT_SUBMODULES ""
 )
 FetchContent_MakeAvailable(uWebSockets_content)
-find_package(ZLIB REQUIRED)
 add_library(uWebSockets INTERFACE)
 target_include_directories(uWebSockets INTERFACE "${uwebsockets_content_SOURCE_DIR}/src/")
-target_link_libraries(uWebSockets INTERFACE uSockets ${ZLIB_LIBRARIES})
+if(BUILD_SHARED_LIBS)
+    target_link_libraries(uWebSockets INTERFACE uSockets zlib)
+else()
+    target_link_libraries(uWebSockets INTERFACE uSockets zlibstatic)
+endif()
 target_compile_options(uWebSockets INTERFACE -Wno-deprecated-declarations)
 
 # mDNS
 FetchContent_Declare(
     mdns
-    GIT_REPOSITORY "https://github.com/kiddigital/mdns_cpp.git"
+    GIT_REPOSITORY "https://github.com/andreilance06/mdns_cpp.git"
 )
 FetchContent_MakeAvailable(mdns)
 
