@@ -3,6 +3,7 @@ local utils = require("mp.utils")
 local http = require("socket.http")
 local ltn12 = require("ltn12")
 local mdns = require("mdns")
+local Config = require("lib/config")
 
 mdns.socket.setup = function(self)
   local socket = require('socket')
@@ -14,14 +15,29 @@ mdns.socket.setup = function(self)
 end
 
 local State = {
+  torrents = {},
   client_running = false,
   launched_by_us = false,
-  torrents = {},
   service_ip = false,
   service_port = false
 }
 
 function State.find_service()
+  if State.launched_by_us then
+    State.service_ip = "127.0.0.1"
+    State.service_port = Config.opts.port
+    return
+  end
+
+  local ok = http.request("http://127.0.0.1:" .. Config.opts.port .. "/torrents")
+  if ok then
+    State.service_ip = "127.0.0.1"
+    State.service_port = Config.opts.port
+    State.launched_by_us = true
+    State.client_running = true
+    return
+  end
+
   local service = '_libtorrentmpv._tcp'
   local ok, found = pcall(function()
     return mdns.query(service, 0.3)
@@ -39,7 +55,6 @@ function State.find_service()
   end
 
   State.client_running = false
-  State.launched_by_us = false
   State.service_ip = false
   State.service_port = false
 end
