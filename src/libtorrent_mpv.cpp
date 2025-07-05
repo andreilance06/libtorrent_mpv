@@ -3,7 +3,6 @@
 #include "wrappers.hpp"
 #include <App.h>
 #include <boost/program_options.hpp>
-#include <boost/url/decode_view.hpp>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +19,35 @@
 #include <regex>
 #include <string>
 #include <string_view>
+
+void urldecode2(char *dst, const char *src) {
+  char a, b;
+  while (*src) {
+    if ((*src == '%') && ((a = src[1]) && (b = src[2])) &&
+        (isxdigit(a) && isxdigit(b))) {
+      if (a >= 'a')
+        a -= 'a' - 'A';
+      if (a >= 'A')
+        a -= ('A' - 10);
+      else
+        a -= '0';
+      if (b >= 'a')
+        b -= 'a' - 'A';
+      if (b >= 'A')
+        b -= ('A' - 10);
+      else
+        b -= '0';
+      *dst++ = 16 * a + b;
+      src += 3;
+    } else if (*src == '+') {
+      *dst++ = ' ';
+      src++;
+    } else {
+      *dst++ = *src++;
+    }
+  }
+  *dst++ = '\0';
+}
 
 static lt::add_torrent_params get_torrent_params(std::string_view id) {
   lt::add_torrent_params params;
@@ -207,9 +235,12 @@ int main(int argc, char **argv) {
       .get("/torrents/:infohash/*",
            [=](auto *res, auto *req) {
              std::string_view info_hash = req->getParameter(0);
-             boost::urls::decode_view decoded(req->getUrl());
-             std::filesystem::path path =
-                 std::string(decoded.begin(), decoded.end()).substr(51);
+             std::string encoded = std::string(req->getUrl());
+             std::string decoded;
+             decoded.resize(encoded.length());
+             urldecode2(decoded.data(), encoded.c_str());
+             decoded.resize(std::strlen(decoded.c_str()));
+             std::filesystem::path path = decoded.substr(51);
              path = path.make_preferred();
 
              lt::sha1_hash sha1;
