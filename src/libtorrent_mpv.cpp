@@ -17,10 +17,11 @@
 #include <mdns_cpp/mdns.hpp>
 #include <range_parser/range_parser.hpp>
 #include <regex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
-void urldecode2(char *dst, const char *src) {
+static void urldecode2(char *dst, const char *src) {
   char a, b;
   while (*src) {
     if ((*src == '%') && ((a = src[1]) && (b = src[2])) &&
@@ -492,10 +493,10 @@ int main(int argc, char **argv) {
                 if (token) {
                   listen_socket_ptr() = token;
                   std::cout << "Server running on port " << port << "...\n";
-                  mdns.startService();
-                  if (!mdns.isServiceRunning()) {
+                  try {
+                    mdns.startService();
+                  } catch (std::runtime_error &e) {
                     std::cerr << "Failed to start mDNS service.\n";
-                    handle_signal(0);
                   }
                 } else {
                   std::cerr << "Failed to listen on port " << port << "\n";

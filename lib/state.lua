@@ -5,12 +5,12 @@ local ltn12 = require("ltn12")
 local mdns = require("mdns")
 
 mdns.socket.setup = function(self)
-        local socket = require('socket')
-        self.udp = socket.udp4()
-        assert(self.udp:setoption('reuseaddr', true))
-        assert(self.udp:setsockname('*', 5353))
-        assert(self.udp:setoption('ip-add-membership', { interface = '*', multiaddr = self.PEER.IP }))
-        assert(self.udp:settimeout(0.1))
+  local socket = require('socket')
+  self.udp = socket.udp4()
+  assert(self.udp:setoption('reuseaddr', true))
+  assert(self.udp:setsockname('*', 5353))
+  self.udp:setoption('ip-add-membership', { interface = '*', multiaddr = self.PEER.IP })
+  assert(self.udp:settimeout(0.1))
 end
 
 local State = {
@@ -23,15 +23,21 @@ local State = {
 
 function State.find_service()
   local service = '_libtorrentmpv._tcp'
-  local found = mdns.query(service, 0.3)
-  for _, v in pairs(found) do
-    if v.ipv4 then
-      State.client_running = true
-      State.service_ip = v.ipv4
-      State.service_port = v.port
-      return
+  local ok, found = pcall(function()
+    return mdns.query(service, 0.3)
+  end)
+
+  if ok then
+    for _, v in pairs(found) do
+      if v.ipv4 then
+        State.client_running = true
+        State.service_ip = v.ipv4
+        State.service_port = v.port
+        return
+      end
     end
   end
+
   State.client_running = false
   State.launched_by_us = false
   State.service_ip = false
