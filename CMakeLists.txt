@@ -14,8 +14,6 @@ endif()
 
 if(WIN32)
     set(BUILD_SHARED_LIBS OFF)
-    set(static_runtime ON)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static")
 endif()
 
 find_package(Boost REQUIRED COMPONENTS system filesystem json program_options)
