@@ -16,6 +16,7 @@
 #include <map>
 #include <mdns_cpp/logger.hpp>
 #include <mdns_cpp/mdns.hpp>
+#include <mdns_cpp/utils.hpp>
 #include <range_parser/range_parser.hpp>
 #include <regex>
 #include <stdexcept>
@@ -161,6 +162,7 @@ int main(int argc, char **argv) {
 
   mdns_cpp::mDNS mdns;
   mdns_cpp::Logger::setLoggerSink([](const std::string &) {});
+  mdns.setServiceHostname(mdns_cpp::getHostName());
   mdns.setServiceName("_libtorrentmpv._tcp.local.");
   mdns.setServicePort(port);
 
