@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
       "address", po::value<std::string>()->default_value("0.0.0.0"),
       "HTTP server address")("port", po::value<uint16_t>()->default_value(1337),
                              "HTTP server port")(
-      "save-path", po::value<fs::path>()->default_value(""),
+      "save-path", po::value<fs::path>()->default_value("."),
       "Directory where downloaded files are stored");
 
   po::variables_map vm;
