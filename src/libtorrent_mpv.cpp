@@ -14,6 +14,7 @@
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
 #include <map>
+#include <mdns_cpp/logger.hpp>
 #include <mdns_cpp/mdns.hpp>
 #include <range_parser/range_parser.hpp>
 #include <regex>
@@ -159,6 +160,7 @@ int main(int argc, char **argv) {
   }
 
   mdns_cpp::mDNS mdns;
+  mdns_cpp::Logger::setLoggerSink([](const std::string &) {});
   mdns.setServiceName("_libtorrentmpv._tcp.local.");
   mdns.setServicePort(port);
 
