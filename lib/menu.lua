@@ -46,22 +46,43 @@ function Menu.create_torrent_menu(menu_id, index)
 
   -- Add client control items
   local client_control_items = {}
-  table.insert(client_control_items, Menu.new_prop({
-    title = State.client_running and "Stop Client" or "Start Client",
-    icon = State.client_running and "stop" or "play_arrow",
-    value = State.client_running and "client_stop" or "client_start"
-  }, function(event)
-    local item, done = Menu.update(event.menu_id, event.index)
-    item.value = "noop"
-    item.icon = "spinner"
-    done()
-    if event.value == "client_start" then
-      Client.start()
-    elseif event.value == "client_stop" then
-      Client.close()
+  if State.client_running then
+    if State.launched_by_us then
+      table.insert(client_control_items, Menu.new_prop({
+        title = "Stop Client",
+        icon = "stop",
+        value = "client_stop"
+      }, function(event)
+        local item, done = Menu.update(event.menu_id, event.index)
+        item.value = "noop"
+        item.icon = "spinner"
+        done()
+        if event.value == "client_stop" then
+          Client.close()
+        end
+        mp.add_timeout(0.75, Menu.update)
+      end))
+    else
+      table.insert(client_control_items, Menu.new_prop({
+        title = "Host: " .. State.service_ip .. ':' .. State.service_port
+      }))
     end
-    mp.add_timeout(0.75, Menu.update)
-  end))
+  else
+    table.insert(client_control_items, Menu.new_prop({
+      title = "Start Client",
+      icon = "play_arrow",
+      value = "client_start"
+    }, function(event)
+      local item, done = Menu.update(event.menu_id, event.index)
+      item.value = "noop"
+      item.icon = "spinner"
+      done()
+      if event.value == "client_start" then
+        Client.start()
+      end
+      mp.add_timeout(0.75, Menu.update)
+    end))
+  end
 
   table.insert(client_control_items, Menu.new_prop({
     title = "Launch torrent client on mpv start",
@@ -72,6 +93,20 @@ function Menu.create_torrent_menu(menu_id, index)
       Config.opts.StartClientOnMpvLaunch = false
     elseif event.value == "toggle_on" then
       Config.opts.StartClientOnMpvLaunch = true
+    end
+    Menu.update()
+    Config.save_opts()
+  end))
+
+  table.insert(client_control_items, Menu.new_prop({
+    title = "Search for torrent client on network",
+    icon = Config.opts.SearchLocalNetwork and "check_box" or "check_box_outline_blank",
+    value = Config.opts.SearchLocalNetwork and "toggle_off" or "toggle_on"
+  }, function(event)
+    if event.value == "toggle_off" then
+      Config.opts.SearchLocalNetwork = false
+    elseif event.value == "toggle_on" then
+      Config.opts.SearchLocalNetwork = true
     end
     Menu.update()
     Config.save_opts()

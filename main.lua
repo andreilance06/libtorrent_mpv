@@ -1,11 +1,9 @@
-package.path = mp.get_script_directory() .. "/lua_packages/share/lua/5.1/?.lua;" ..
-    package.path
-package.cpath = mp.get_script_directory() .. "/lua_packages/lib64/lua/5.1/?.so;" .. package.cpath
+PLATFORM = mp.get_property("platform", "")
+BINARY_SUFFIX = PLATFORM == "windows" and ".exe" or ""
 
 -- Utils
 local options = require("mp.options")
 
-PLATFORM = mp.get_property("platform", "")
 
 local Config = require("lib/config")
 local State = require("lib/state")
@@ -80,9 +78,7 @@ local function init()
     State.find_service()
   end)
 
-  if State.client_running then
-    State.launched_by_us = false
-  elseif Config.opts.StartClientOnMpvLaunch then
+  if not State.client_running and Config.opts.StartClientOnMpvLaunch then
     Client.start()
   end
 end

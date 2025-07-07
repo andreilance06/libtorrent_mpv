@@ -1,25 +1,14 @@
 local msg = require("mp.msg")
 local utils = require("mp.utils")
-local http = require("socket.http")
-local ltn12 = require("ltn12")
-local mdns = require("mdns")
 local Config = require("lib/config")
 
-mdns.socket.setup = function(self)
-  local socket = require('socket')
-  self.udp = socket.udp4()
-  assert(self.udp:setoption('reuseaddr', true))
-  assert(self.udp:setsockname('*', 5353))
-  self.udp:setoption('ip-add-membership', { interface = '*', multiaddr = self.PEER.IP })
-  assert(self.udp:settimeout(0.1))
-end
 
 local State = {
   torrents = {},
   client_running = false,
   launched_by_us = false,
-  service_ip = false,
-  service_port = false
+  service_ip = nil,
+  service_port = nil
 }
 
 function State.find_service()
@@ -29,34 +18,50 @@ function State.find_service()
     return
   end
 
-  local ok = http.request("http://127.0.0.1:" .. Config.opts.port .. "/torrents")
-  if ok then
+  local cmd = mp.command_native({
+    name = "subprocess",
+    playback_only = false,
+    capture_stdout = true,
+    capture_stderr = true,
+    args = { "curl", "-s", "--connect-timeout", "0.1", "http://127.0.0.1:" .. Config.opts.port .. "/torrents" }
+  })
+
+  if cmd.status == 0 then
+    State.client_running = true
+    State.launched_by_us = true
     State.service_ip = "127.0.0.1"
     State.service_port = Config.opts.port
-    State.launched_by_us = true
-    State.client_running = true
     return
   end
 
-  local service = '_libtorrentmpv._tcp'
-  local ok, found = pcall(function()
-    return mdns.query(service, 0.3)
-  end)
+  if Config.opts.SearchLocalNetwork then
+    local cmd = mp.command_native({
+      name = "subprocess",
+      playback_only = false,
+      capture_stdout = true,
+      capture_stderr = true,
+      args = { mp.get_script_directory() .. '/' .. "findmdns" .. BINARY_SUFFIX }
+    })
 
-  if ok then
-    for _, v in pairs(found) do
-      if v.ipv4 then
-        State.client_running = true
-        State.service_ip = v.ipv4
-        State.service_port = v.port
-        return
+    if cmd.status == 0 then
+      local stdout = cmd.stdout or ""
+      if stdout ~= "" then
+        local ip, port = stdout:match("^(%d+%.%d+%.%d+%.%d+):(%d+)$")
+        if ip and port then
+          State.launched_by_us = false
+          State.client_running = true
+          State.service_ip     = ip
+          State.service_port   = port
+          return
+        end
       end
     end
   end
 
   State.client_running = false
-  State.service_ip = false
-  State.service_port = false
+  State.launched_by_us = false
+  State.service_ip = nil
+  State.service_port = nil
 end
 
 function State.update()
@@ -65,22 +70,22 @@ function State.update()
     return false
   end
 
-  local url = "http://" .. State.service_ip .. ":" .. State.service_port .. "/torrents"
-  local response_body = {}
-  local res, code = http.request {
-    url = url,
-    sink = ltn12.sink.table(response_body),
-    method = "GET"
-  }
+  local cmd = mp.command_native({
+    name = "subprocess",
+    playback_only = false,
+    capture_stdout = true,
+    capture_stderr = true,
+    args = { "curl", "-s", "--connect-timeout", "3", "http://" .. State.service_ip .. ":" .. State.service_port .. "/torrents" }
+  })
 
-  if code ~= 200 then
+  if cmd.status ~= 0 then
     State.client_running = false
-    msg.error("error updating client state: http status is", code)
+    State.launched_by_us = false
+    msg.error("error updating client state: subprocess status is", cmd.status)
     return false
   end
 
-  local body = table.concat(response_body)
-  local t = utils.parse_json(body)
+  local t = utils.parse_json(cmd.stdout)
   for _, v in pairs(t) do
     table.insert(State.torrents, {
       InfoHash = v.InfoHash,
