@@ -76,7 +76,7 @@ function Client.add(torrent_url)
   })
 
   if cmd.status ~= 0 or not cmd.stdout or #cmd.stdout == 0 then
-    msg.debug("Unable to get infohash for", torrent_url)
+    msg.debug("Unable to get playlist for", torrent_url)
   end
 
   return cmd.stdout

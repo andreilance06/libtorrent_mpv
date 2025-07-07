@@ -32,7 +32,7 @@ local function on_file_loaded()
         local playlist = Client.add(path)
         if playlist then
           State.update()
-          local infohash = playlist:match("/(" .. string.rep("%x", 40) .. ")/")
+          local infohash = playlist:match("(" .. string.rep("%x", 40) .. ")/")
           for _, v in pairs(State.torrents) do
             if v.InfoHash == infohash then
               local media_files = {}
