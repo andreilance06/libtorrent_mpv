@@ -165,6 +165,7 @@ int main(int argc, char **argv) {
   mdns.setServiceHostname(mdns_cpp::getHostName());
   mdns.setServiceName("_libtorrentmpv._tcp.local.");
   mdns.setServicePort(port);
+  mdns.setServiceTxtRecord("");
 
   auto loop = uWS::Loop::get();
   uWS::App()
