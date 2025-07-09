@@ -414,11 +414,11 @@ int main(int argc, char **argv) {
            })
       .post("/torrents",
             [=](auto *res, auto *req) {
-              std::string body;
               auto aborted = std::make_shared<std::atomic<bool>>(false);
               res->onAborted([aborted]() { aborted->store(true); });
 
-              res->onData([=, &body](std::string_view part, bool last) {
+              res->onData([=, body = std::string()](std::string_view part,
+                                                    bool last) mutable {
                 body.append(part.data(), part.length());
                 if (!last)
                   return;
