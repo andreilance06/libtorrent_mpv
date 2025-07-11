@@ -100,12 +100,16 @@ void handle_signal(int) {
   auto listen_socket = listen_socket_ptr();
   auto service_child = service_ptr();
   if (service_child) {
-    if (service_child->terminate()) {
-      std::cout << "Failed to stop mDNS service\n";
+    auto [_, error_code] = service_child->stop(
+        {{reproc::stop::terminate, reproc::milliseconds(6000)},
+         {reproc::stop::kill, reproc::milliseconds(3000)},
+         {}});
+    if (error_code) {
+      std::cerr << "Failed to stop mDNS service " << error_code << '\n';
     } else {
       std::cout << "Stopped mDNS service...\n";
     }
-    service_child = nullptr;
+    service_child.reset();
   }
   if (listen_socket) {
     us_listen_socket_close(0, listen_socket);
@@ -514,8 +518,10 @@ int main(int argc, char **argv) {
                   service_ptr() = std::make_shared<reproc::process>();
                   std::vector<std::string> args = {
                       ltmpv_path, "register", "--port", std::to_string(port)};
-                  if (service_ptr()->start(args)) {
-                    std::cout << "Failed to register mDNS service...\n";
+                  auto error_code = service_ptr()->start(args);
+                  if (error_code) {
+                    std::cerr << "Failed to register mDNS service "
+                              << error_code << '\n';
                   } else {
                     std::cout << "Registered mDNS service...\n";
                   }
