@@ -74,13 +74,6 @@ else()
 endif()
 target_compile_options(uWebSockets INTERFACE -Wno-deprecated-declarations)
 
-# mDNS
-FetchContent_Declare(
-    mdns
-    GIT_REPOSITORY "https://github.com/andreilance06/mdns_cpp.git"
-)
-FetchContent_MakeAvailable(mdns)
-
 # range_parser
 FetchContent_Declare(
     range_parser
@@ -109,6 +102,5 @@ target_link_libraries(libtorrent_mpv
     ${Boost_LIBRARIES}
     torrent-rasterbar
     uWebSockets
-    mdns_cpp
     range_parser
 )
