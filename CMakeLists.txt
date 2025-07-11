@@ -74,6 +74,15 @@ else()
 endif()
 target_compile_options(uWebSockets INTERFACE -Wno-deprecated-declarations)
 
+# reproc
+FetchContent_Declare(
+    reproc_content
+    GIT_REPOSITORY "https://github.com/DaanDeMeyer/reproc.git"
+    GIT_TAG "v14.2.5"
+)
+set(REPROC++ ON)
+FetchContent_MakeAvailable(reproc_content)
+
 # range_parser
 FetchContent_Declare(
     range_parser
@@ -100,7 +109,8 @@ target_compile_options(libtorrent_mpv
 target_link_libraries(libtorrent_mpv
     PRIVATE
     ${Boost_LIBRARIES}
+    range_parser
+    reproc++
     torrent-rasterbar
     uWebSockets
-    range_parser
 )

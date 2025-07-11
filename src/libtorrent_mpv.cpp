@@ -3,7 +3,6 @@
 #include "wrappers.hpp"
 #include <App.h>
 #include <boost/dll.hpp>
-#include <boost/process.hpp>
 #include <boost/program_options.hpp>
 #include <csignal>
 #include <filesystem>
@@ -18,6 +17,7 @@
 #include <map>
 #include <range_parser/range_parser.hpp>
 #include <regex>
+#include <reproc++/reproc.hpp>
 #include <string>
 #include <string_view>
 
@@ -91,8 +91,8 @@ static us_listen_socket_t *&listen_socket_ptr() {
   return ptr;
 }
 
-static std::shared_ptr<boost::process::child> &service_ptr() {
-  static std::shared_ptr<boost::process::child> ptr = nullptr;
+static std::shared_ptr<reproc::process> &service_ptr() {
+  static std::shared_ptr<reproc::process> ptr = nullptr;
   return ptr;
 }
 
@@ -100,8 +100,9 @@ void handle_signal(int) {
   auto listen_socket = listen_socket_ptr();
   auto service_child = service_ptr();
   if (service_child) {
-    if (service_child->valid() && service_child->running()) {
-      service_child->terminate();
+    if (service_child->terminate()) {
+      std::cout << "Failed to stop mDNS service\n";
+    } else {
       std::cout << "Stopped mDNS service...\n";
     }
     service_child = nullptr;
@@ -503,17 +504,20 @@ int main(int argc, char **argv) {
                 if (token) {
                   listen_socket_ptr() = token;
                   auto bin_path = boost::dll::program_location();
+                  auto ltmpv_path =
+                      (bin_path.parent_path() / "ltmpv-sd").string();
+
                   std::cout << "Server running on port " << port << "...\n";
 #ifdef _WIN32
-                  service_ptr() = std::make_shared<boost::process::child>(
-                      (bin_path.parent_path() / "ltmpv-sd.exe").string() +
-                      " register --port " + std::to_string(port));
-
-#else
-                  service_ptr() = std::make_shared<boost::process::child>((bin_path.parent_path() / "ltmpv-sd").string() + " register --port " + std::to_string(port));
+                  ltmpv_path.append(".exe");
 #endif
-                  if (service_ptr()->valid() && service_ptr()->running()) {
-                    std::cout << "Registering mDNS service...\n";
+                  service_ptr() = std::make_shared<reproc::process>();
+                  std::vector<std::string> args = {
+                      ltmpv_path, "register", "--port", std::to_string(port)};
+                  if (service_ptr()->start(args)) {
+                    std::cout << "Failed to register mDNS service...\n";
+                  } else {
+                    std::cout << "Registered mDNS service...\n";
                   }
 
                 } else {
