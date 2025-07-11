@@ -2,6 +2,8 @@
 #include "libusockets.h"
 #include "wrappers.hpp"
 #include <App.h>
+#include <boost/dll.hpp>
+#include <boost/process.hpp>
 #include <boost/program_options.hpp>
 #include <csignal>
 #include <filesystem>
@@ -14,12 +16,8 @@
 #include <libtorrent/read_resume_data.hpp>
 #include <libtorrent/session.hpp>
 #include <map>
-#include <mdns_cpp/logger.hpp>
-#include <mdns_cpp/mdns.hpp>
-#include <mdns_cpp/utils.hpp>
 #include <range_parser/range_parser.hpp>
 #include <regex>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -93,11 +91,25 @@ static us_listen_socket_t *&listen_socket_ptr() {
   return ptr;
 }
 
+static std::shared_ptr<boost::process::child> &service_ptr() {
+  static std::shared_ptr<boost::process::child> ptr = nullptr;
+  return ptr;
+}
+
 void handle_signal(int) {
-  auto &sock = listen_socket_ptr();
-  if (sock) {
-    us_listen_socket_close(0, sock);
-    sock = nullptr;
+  auto listen_socket = listen_socket_ptr();
+  auto service_child = service_ptr();
+  if (service_child) {
+    if (service_child->valid() && service_child->running()) {
+      service_child->terminate();
+      std::cout << "Stopped mDNS service...\n";
+    }
+    service_child = nullptr;
+  }
+  if (listen_socket) {
+    us_listen_socket_close(0, listen_socket);
+    std::cout << "Listen socket closed...\n";
+    listen_socket = nullptr;
   }
 }
 
@@ -159,13 +171,6 @@ int main(int argc, char **argv) {
     params.save_path = handler->save_path.make_preferred().string();
     handler->session->async_add_torrent(params);
   }
-
-  mdns_cpp::mDNS mdns;
-  mdns_cpp::Logger::setLoggerSink([](const std::string &) {});
-  mdns.setServiceHostname(mdns_cpp::getHostName());
-  mdns.setServiceName("_libtorrentmpv._tcp.local.");
-  mdns.setServicePort(port);
-  mdns.setServiceTxtRecord("");
 
   auto loop = uWS::Loop::get();
   uWS::App()
@@ -494,26 +499,29 @@ int main(int argc, char **argv) {
              res->writeStatus("403 Forbidden")->end("Forbidden");
            })
       .listen(address, port,
-              [=, &mdns](auto *token) {
+              [=](auto *token) mutable {
                 if (token) {
                   listen_socket_ptr() = token;
+                  auto bin_path = boost::dll::program_location();
                   std::cout << "Server running on port " << port << "...\n";
-                  try {
-                    mdns.startService();
-                  } catch (std::runtime_error &e) {
-                    std::cerr << "Failed to start mDNS service.\n";
+#ifdef _WIN32
+                  service_ptr() = std::make_shared<boost::process::child>(
+                      (bin_path.parent_path() / "ltmpv-sd.exe").string() +
+                      " register --port " + std::to_string(port));
+
+#else
+                  service_ptr() = std::make_shared<boost::process::child>((bin_path.parent_path() / "ltmpv-sd").string() + " register --port " + std::to_string(port));
+#endif
+                  if (service_ptr()->valid() && service_ptr()->running()) {
+                    std::cout << "Registering mDNS service...\n";
                   }
+
                 } else {
                   std::cerr << "Failed to listen on port " << port << "\n";
                 }
               })
       .run();
 
-  std::cout << "Shutting down server...\n";
-  if (mdns.isServiceRunning()) {
-    std::cout << "Stopping mDNS service...\n";
-    mdns.stopService();
-  }
   handler->stop();
   handler->join();
   std::cout << "Closing program...\n";

@@ -40,7 +40,7 @@ function State.find_service()
       playback_only = false,
       capture_stdout = true,
       capture_stderr = true,
-      args = { mp.get_script_directory() .. '/' .. "findmdns" .. BINARY_SUFFIX }
+      args = { mp.get_script_directory() .. '/' .. "ltmpv-sd" .. BINARY_SUFFIX, "find" }
     })
 
     if cmd.status == 0 then
