@@ -202,13 +202,15 @@ int main(int argc, char **argv) {
                return;
 
              if (!ok) {
-               res->onWritable(
-                   [=, content = std::move(content)](std::size_t offset) {
-                     auto [ok2, _] =
-                         res->tryEnd(std::string_view(content.data(), offset),
-                                     content.length());
-                     return ok2;
-                   });
+               res->onAborted([]() {});
+               res->onWritable([=, content =
+                                       std::move(content)](std::size_t offset) {
+                 auto [ok2, _] =
+                     res->tryEnd(std::string_view(content.data() + offset,
+                                                  content.length() - offset),
+                                 content.length());
+                 return ok2;
+               });
              }
            })
       .get("/torrents/:infohash",
