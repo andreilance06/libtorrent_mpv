@@ -4,6 +4,7 @@
 #include <App.h>
 #include <boost/dll.hpp>
 #include <boost/program_options.hpp>
+#include <climits>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -152,7 +153,7 @@ int main(int argc, char **argv) {
                               lt::alert_category::storage |
                               lt::alert_category::piece_progress);
   params.settings.set_int(lt::settings_pack::connection_speed, 500);
-  params.settings.set_int(lt::settings_pack::connections_limit, 800);
+  params.settings.set_int(lt::settings_pack::connections_limit, INT_MAX);
   params.settings.set_int(lt::settings_pack::listen_queue_size, 50);
   params.settings.set_int(lt::settings_pack::max_queued_disk_bytes,
                           7 * 1024 * 1024);
