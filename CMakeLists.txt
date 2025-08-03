@@ -14,6 +14,8 @@ endif()
 
 if(WIN32)
     set(BUILD_SHARED_LIBS OFF)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    set(Boost_USE_STATIC_LIBS ON)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wa,-mbig-obj -static")
 endif()
 
