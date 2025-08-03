@@ -56,7 +56,7 @@ FetchContent_MakeAvailable(uSockets_content)
 file(GLOB_RECURSE US_SOURCES "${usockets_content_SOURCE_DIR}/src/*.c")
 add_library(uSockets ${US_SOURCES})
 target_include_directories(uSockets PUBLIC "${usockets_content_SOURCE_DIR}/src/")
-target_link_libraries(uSockets PUBLIC libuv::libuv)
+target_link_libraries(uSockets PRIVATE libuv::libuv)
 target_compile_definitions(uSockets PRIVATE LIBUS_NO_SSL)
 
 # uWebSockets
